@@ -962,6 +962,13 @@ function registerIpcHandlers() {
     return usage || { ok: false };
   });
 
+  // BYOK: store / clear / inspect the user's own OpenAI-compatible API
+  // key. The key is encrypted in ai-config.js and never returned to the
+  // renderer — the UI only learns whether one is set.
+  ipcMain.handle('ai:set-key', (_e, key) =>
+    require('./ai-config').setAiKey(typeof key === 'string' ? key : ''));
+  ipcMain.handle('ai:has-key', () => ({ hasKey: require('./ai-config').hasAiKey() }));
+
   ipcMain.handle('settings:get-prefs', () => settings.getPrefs());
 
   ipcMain.handle('settings:set-pref', (_e, payload = {}) => {
