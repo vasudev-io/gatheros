@@ -40,6 +40,34 @@ const NAV_ITEMS = [
   { id: 'about',      label: 'About',      Icon: Info },
 ];
 
+// Bring-your-own-AI providers on the AI page. Mirrors the presets in
+// main/ai-config.js — used here only for the picker labels, placeholder
+// model hints, and whether to show the key field; the effective
+// defaults still resolve in main when a field is left blank.
+const AI_PROVIDERS = [
+  { id: 'proxy',  label: 'GatherOS (subscription)', needsKey: false },
+  {
+    id: 'gemini', label: 'Google Gemini — free', needsKey: true,
+    vision: 'gemini-2.0-flash', embed: 'gemini-embedding-001',
+    keyUrl: 'https://aistudio.google.com/apikey',
+    keyUrlLabel: 'aistudio.google.com/apikey',
+  },
+  {
+    id: 'ollama', label: 'Ollama — local, free', needsKey: false,
+    vision: 'qwen2.5vl', embed: 'nomic-embed-text',
+  },
+  {
+    id: 'custom', label: 'OpenAI-compatible', needsKey: true,
+    vision: 'gpt-4o-mini', embed: 'text-embedding-3-small',
+  },
+];
+const AI_PROVIDER_HINTS = {
+  proxy:  'Managed OpenAI, included with your subscription.',
+  gemini: 'Free Gemini API key — strong OCR, no credit card.',
+  ollama: 'Runs locally via Ollama. Private, offline, no key.',
+  custom: 'Any OpenAI-compatible endpoint (OpenRouter, Groq, vLLM…).',
+};
+
 function formatPlanLabel(account) {
   if (!account) return '—';
   const sub = account.subscription;
@@ -664,6 +692,11 @@ export default function SettingsModal({
   // flag stays true throughout Settings.
   const [hasAi, setHasAi] = useState(false);
   const [usage, setUsage] = useState(null);
+  // BYOK: whether a provider key is stored (never the key itself), plus
+  // the in-progress paste + a transient "Saved" confirmation.
+  const [hasKey, setHasKey] = useState(false);
+  const [keyDraft, setKeyDraft] = useState('');
+  const [keySaved, setKeySaved] = useState(false);
   const [prefs, setPrefs] = useState({ autoNameOnSave: true, theme: 'light' });
   const [unindexed, setUnindexed] = useState(0);
   const [reindexState, setReindexState] = useState({ running: false, processed: 0, total: 0 });
@@ -729,7 +762,8 @@ export default function SettingsModal({
       window.moodmark.ai.usage(),
       window.moodmark.settings.getPrefs(),
       window.moodmark.ai.unindexedCount(),
-    ]).then(([sessionExists, u, p, count]) => {
+      window.moodmark.ai.hasKey(),
+    ]).then(([sessionExists, u, p, count, keyStatus]) => {
       if (cancelled) return;
       setHasAi(!!sessionExists);
       // Mirror up to App.jsx so AI buttons in DetailPanel etc. light
@@ -739,6 +773,7 @@ export default function SettingsModal({
       setUsage(u && u.ok ? u : null);
       setPrefs(p);
       setUnindexed(count || 0);
+      setHasKey(!!keyStatus?.hasKey);
     });
     // Stale transient feedback (the "Erased X saves" / "Exported to
     // …" / etc. lines) shouldn't survive a close + reopen — reset
@@ -795,6 +830,38 @@ export default function SettingsModal({
     }
 
     onPrefsChange?.(updated);
+  }
+
+  // Re-read whether AI is usable right now. Switching provider or
+  // saving/clearing a key can flip readiness (a stored key vs. a
+  // licensing session), so callers below refresh through here.
+  async function refreshAiSession() {
+    const sess = await window.moodmark.ai.hasSession();
+    setHasAi(!!sess);
+    onConfiguredChange?.(!!sess);
+  }
+
+  async function handleProviderChange(value) {
+    await updatePref('aiProvider', value);
+    await refreshAiSession();
+  }
+
+  async function handleSaveKey() {
+    const next = keyDraft.trim();
+    if (!next) return;
+    await window.moodmark.ai.setKey(next);
+    const status = await window.moodmark.ai.hasKey();
+    setHasKey(!!status?.hasKey);
+    setKeyDraft('');
+    setKeySaved(true);
+    await refreshAiSession();
+  }
+
+  async function handleClearKey() {
+    await window.moodmark.ai.setKey('');
+    setHasKey(false);
+    setKeySaved(false);
+    await refreshAiSession();
   }
 
 
@@ -987,6 +1054,10 @@ export default function SettingsModal({
   })();
   const visibleTags = tagShowAll ? filteredTags : filteredTags.slice(0, TAG_RENDER_CAP);
   const unusedTagCount = tags.filter((t) => (t.save_count || 0) === 0).length;
+
+  const aiProvider = prefs.aiProvider || 'proxy';
+  const aiMeta = AI_PROVIDERS.find((p) => p.id === aiProvider) || AI_PROVIDERS[0];
+  const isByok = aiProvider !== 'proxy';
 
   if (!open) return null;
 
@@ -1233,15 +1304,16 @@ export default function SettingsModal({
           {activePage === 'ai' && (
             <div className={styles.page}>
               <p className={styles.sectionHint}>
-                Auto-tagging, auto-titles, semantic search, and image-prompt
-                generation run on a managed OpenAI integration that ships
-                with your subscription — no API key to set up.
+                Auto-titles, descriptions, OCR, and visual search run on the
+                managed integration included with your subscription — or point
+                them at your own AI provider below (a free Gemini key or a
+                local Ollama both work).
               </p>
 
               {!hasAi && (
                 <div className={styles.statusRow}>
                   <span className={`${styles.status} ${styles.statusMuted}`}>
-                    Sign in to unlock AI features
+                    Sign in, or set up your own AI provider below, to unlock AI features
                   </span>
                 </div>
               )}
@@ -1305,6 +1377,116 @@ export default function SettingsModal({
                     {reindexState.running ? 'Indexing…' : 'Index now'}
                   </button>
                 </div>
+              )}
+
+              {/* Bring-your-own-AI — route vision + embeddings to your
+                  own OpenAI-compatible endpoint instead of the
+                  subscription proxy. */}
+              <div className={styles.divider} />
+              <div className={styles.field}>
+                <label className={styles.fieldLabel}>AI provider</label>
+                <select
+                  className={styles.select}
+                  value={aiProvider}
+                  onChange={(e) => handleProviderChange(e.target.value)}
+                >
+                  {AI_PROVIDERS.map((p) => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </select>
+                <span className={styles.fieldHint}>{AI_PROVIDER_HINTS[aiProvider]}</span>
+              </div>
+
+              {isByok && aiMeta.needsKey && (
+                <div className={styles.field}>
+                  <label className={styles.fieldLabel}>API key</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="password"
+                      className={styles.textInput}
+                      style={{ flex: 1 }}
+                      placeholder={hasKey ? '••••••••••••  saved' : 'Paste your API key'}
+                      value={keyDraft}
+                      onChange={(e) => { setKeyDraft(e.target.value); setKeySaved(false); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleSaveKey(); }}
+                    />
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnPrimary}`}
+                      onClick={handleSaveKey}
+                      disabled={!keyDraft.trim()}
+                    >
+                      Save
+                    </button>
+                    {hasKey && (
+                      <button type="button" className={styles.btn} onClick={handleClearKey}>
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <span className={styles.fieldHint}>
+                    {aiMeta.keyUrl ? (
+                      <>
+                        Get a free key at{' '}
+                        <button
+                          type="button"
+                          className={styles.aboutLink}
+                          onClick={() => window.moodmark.shell.openUrl(aiMeta.keyUrl)}
+                        >
+                          {aiMeta.keyUrlLabel}
+                        </button>
+                        . Stored encrypted on this Mac, never sent to GatherOS.
+                      </>
+                    ) : (
+                      'Stored encrypted on this Mac, never sent to GatherOS.'
+                    )}
+                    {keySaved && ' · Saved.'}
+                  </span>
+                </div>
+              )}
+
+              {isByok && aiProvider === 'custom' && (
+                <div className={styles.field}>
+                  <label className={styles.fieldLabel}>Base URL</label>
+                  <input
+                    className={styles.textInput}
+                    placeholder="https://api.example.com/v1"
+                    value={prefs.aiBaseUrl || ''}
+                    onChange={(e) => updatePref('aiBaseUrl', e.target.value)}
+                  />
+                  <span className={styles.fieldHint}>
+                    The OpenAI-compatible base, typically ending in /v1.
+                  </span>
+                </div>
+              )}
+
+              {isByok && (
+                <>
+                  <div className={styles.field}>
+                    <label className={styles.fieldLabel}>Vision model</label>
+                    <input
+                      className={styles.textInput}
+                      placeholder={aiMeta.vision}
+                      value={prefs.aiVisionModel || ''}
+                      onChange={(e) => updatePref('aiVisionModel', e.target.value)}
+                    />
+                    <span className={styles.fieldHint}>
+                      Titles, descriptions, and OCR. Must accept images. Blank uses {aiMeta.vision}.
+                    </span>
+                  </div>
+                  <div className={styles.field}>
+                    <label className={styles.fieldLabel}>Embedding model</label>
+                    <input
+                      className={styles.textInput}
+                      placeholder={aiMeta.embed}
+                      value={prefs.aiEmbedModel || ''}
+                      onChange={(e) => updatePref('aiEmbedModel', e.target.value)}
+                    />
+                    <span className={styles.fieldHint}>
+                      Powers visual search. Blank uses {aiMeta.embed}.
+                    </span>
+                  </div>
+                </>
               )}
             </div>
           )}

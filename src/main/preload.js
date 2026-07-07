@@ -180,6 +180,10 @@ contextBridge.exposeInMainWorld('moodmark', {
     unindexedCount: () => ipcRenderer.invoke('ai:unindexed-count'),
     reindexLibrary: () => ipcRenderer.invoke('ai:reindex-library'),
     similarSaves: (saveId, limit) => ipcRenderer.invoke('ai:similar-saves', saveId, limit),
+    // Bring-your-own-AI key: write-only from the renderer's side (the
+    // raw key never comes back — hasKey returns just a boolean).
+    setKey: (key) => ipcRenderer.invoke('ai:set-key', key),
+    hasKey: () => ipcRenderer.invoke('ai:has-key'),
   },
   updater: {
     install: () => ipcRenderer.invoke('updater:install'),

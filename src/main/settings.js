@@ -1,7 +1,7 @@
-// Plain-JSON preferences store. AI key storage was retired when the
-// app moved from BYOK to a server-proxied OpenAI integration; the
-// licensing session token (handled in licensing.js) is the only
-// credential the renderer cares about now.
+// Plain-JSON preferences store. Non-secret AI provider config (which
+// provider, base URL, model overrides) lives here; secrets do not —
+// the licensing session token lives in licensing.js and the optional
+// bring-your-own-AI key is encrypted separately in ai-config.js.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -32,6 +32,17 @@ const DEFAULT_PREFS = {
 
   // ── Trash retention ──────────────────────────────────────────
   trashAutoEmptyDays: 0,   // 0 = disabled; otherwise N days
+
+  // ── AI provider ──────────────────────────────────────────────
+  // 'proxy' = managed GatherOS subscription proxy (default). 'gemini'
+  // | 'ollama' | 'custom' route vision + embeddings straight to your
+  // own OpenAI-compatible endpoint. Blank base URL / model fields
+  // fall back to per-provider presets (see ai-config.js); the API key
+  // is stored encrypted there, never here.
+  aiProvider: 'proxy',
+  aiBaseUrl: '',
+  aiVisionModel: '',
+  aiEmbedModel: '',
 };
 
 function prefsFilePath() {
