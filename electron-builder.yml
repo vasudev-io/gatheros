@@ -32,6 +32,7 @@ asarUnpack:
   - node_modules/better-sqlite3/**/*
   - node_modules/sharp/**/*
   - node_modules/@img/**/*
+  - node_modules/uiohook-napi/**/*
 mac:
   category: public.app-category.productivity
   # Strip Electron's bundled non-English locales. macOS Sequoia

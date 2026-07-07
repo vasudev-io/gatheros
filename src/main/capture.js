@@ -134,35 +134,44 @@ async function ensureScreenRecordingPermission() {
   return false;
 }
 
-// Area capture hands off to macOS's native `screencapture -i -s` so
-// the user gets the OS-native crosshair, dimmed selection rectangle,
-// W×H readout, modifier-key behaviour (shift to lock axis, option to
-// size from centre), and — most importantly — a cursor that works
-// reliably across every connected display. Our previous in-app
-// overlay couldn't get the CSS crosshair to render on a second
-// monitor because macOS only refreshes the cursor on the frontmost
-// window. Letting the OS draw its own UI sidesteps the whole problem.
+// Shared tail for every capture path: dedup, persist, notify.
+async function saveBufferToLibrary(buf, label) {
+  if (!buf || !buf.length) {
+    console.warn(`[capture] ${label}: empty buffer, skipped`);
+    return;
+  }
+  writeToDropFolder(buf);
+  const { saveImageFromBuffer } = require('./storage');
+  const { insertSave } = require('./db');
+  const { notifySaved, notifyDuplicate } = require('./notify');
+  const imgData = await saveImageFromBuffer(buf, 'png');
+  if (imgData.duplicateOf) {
+    notifyDuplicate(imgData.existing);
+  } else {
+    const record = insertSave(imgData);
+    notifySaved(record);
+  }
+}
+
+// Area capture hands off to macOS's native `screencapture -i -s` so the
+// user gets the OS-native crosshair, dimmed selection rectangle, W×H
+// readout, and modifier-key behaviour (shift locks axis, option sizes
+// from centre) — plus a cursor that works across every display. This is
+// an explicit, deliberate action (⌘⇧S), so the shutter/focus behaviour
+// of the native tool is expected here.
 async function startScreenshotCapture() {
   if (process.platform !== 'darwin') {
     console.warn('[capture] area capture is macOS-only');
     return;
   }
-
   const ok = await ensureScreenRecordingPermission();
   if (!ok) return;
 
   const tmpPath = path.join(os.tmpdir(), `gatheros-area-${Date.now()}.png`);
   console.log('[capture] screencapture -i -s →', tmpPath);
-
   try {
     await new Promise((resolve, reject) => {
-      // -i: interactive selection UI
-      // -s: only allow rect selection (don't toggle to window mode on space)
-      // -x: no shutter sound
-      // -t png: PNG output
-      const proc = spawn('/usr/sbin/screencapture', [
-        '-i', '-s', '-x', '-t', 'png', tmpPath,
-      ]);
+      const proc = spawn('/usr/sbin/screencapture', ['-i', '-s', '-x', '-t', 'png', tmpPath]);
       let stderr = '';
       proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
       proc.on('close', (code) => {
@@ -171,29 +180,12 @@ async function startScreenshotCapture() {
       });
       proc.on('error', reject);
     });
-
-    // Give the FS a beat to flush before we read.
     await new Promise((r) => setTimeout(r, 80));
-
     if (!fs.existsSync(tmpPath)) {
-      // No file means the user pressed Escape — nothing to save.
       console.log('[capture] user cancelled area capture');
       return;
     }
-
-    const buf = fs.readFileSync(tmpPath);
-    writeToDropFolder(buf);
-
-    const { saveImageFromBuffer } = require('./storage');
-    const { insertSave } = require('./db');
-    const { notifySaved, notifyDuplicate } = require('./notify');
-    const imgData = await saveImageFromBuffer(buf, 'png');
-    if (imgData.duplicateOf) {
-      notifyDuplicate(imgData.existing);
-    } else {
-      const record = insertSave(imgData);
-      notifySaved(record);
-    }
+    await saveBufferToLibrary(fs.readFileSync(tmpPath), 'area');
   } catch (err) {
     console.error('[capture] area capture failed:', err);
   } finally {
@@ -203,8 +195,11 @@ async function startScreenshotCapture() {
   }
 }
 
-// Capture the entire display under the cursor in one shot — no
-// overlay, no picker. Saves straight to the active library.
+// Instant full-screen grab for the ⌘⌘ hotkey. Uses desktopCapturer on
+// purpose: unlike the native `screencapture` binary it makes NO shutter
+// sound, shows NO floating thumbnail, and — critically — never steals
+// focus, so the app window doesn't get shoved behind everything on every
+// capture. The screenshot just quietly lands in the library.
 async function captureFullscreen() {
   const ok = await ensureScreenRecordingPermission();
   if (!ok) return;
@@ -214,33 +209,34 @@ async function captureFullscreen() {
   const targetWidth = Math.round(display.size.width * sf);
   const targetHeight = Math.round(display.size.height * sf);
 
-  const sources = await desktopCapturer.getSources({
-    types: ['screen'],
-    thumbnailSize: { width: targetWidth, height: targetHeight },
-  });
-  let source = sources.find((s) => Number(s.display_id) === display.id);
-  if (!source) {
-    const allDisplays = screen.getAllDisplays();
-    const idx = allDisplays.findIndex((d) => d.id === display.id);
-    if (idx >= 0 && sources[idx]) source = sources[idx];
+  // desktopCapturer's first frame can come back empty (a cold, black
+  // thumbnail) right after launch or on a quick tap. Retry until we get
+  // real pixels instead of saving an empty buffer.
+  let png = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: targetWidth, height: targetHeight },
+    });
+    let source = sources.find((s) => Number(s.display_id) === display.id);
+    if (!source) {
+      const allDisplays = screen.getAllDisplays();
+      const idx = allDisplays.findIndex((d) => d.id === display.id);
+      if (idx >= 0 && sources[idx]) source = sources[idx];
+    }
+    const buf = source ? source.thumbnail.toPNG() : null;
+    if (buf && buf.length > 0) { png = buf; break; }
+    await new Promise((r) => setTimeout(r, 120));
   }
-  if (!source) return;
+  if (!png) {
+    console.warn('[capture] fullscreen: empty buffer after retries, skipped');
+    return;
+  }
 
   try {
-    const png = source.thumbnail.toPNG();
-    writeToDropFolder(png);
-    const { saveImageFromBuffer } = require('./storage');
-    const { insertSave } = require('./db');
-    const { notifySaved, notifyDuplicate } = require('./notify');
-    const imgData = await saveImageFromBuffer(png, 'png');
-    if (imgData.duplicateOf) {
-      notifyDuplicate(imgData.existing);
-    } else {
-      const record = insertSave(imgData);
-      notifySaved(record);
-    }
+    await saveBufferToLibrary(png, 'fullscreen');
   } catch (err) {
-    console.error('Failed to capture fullscreen:', err);
+    console.error('[capture] fullscreen failed:', err);
   }
 }
 

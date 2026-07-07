@@ -89,6 +89,7 @@ const {
   captureFullscreen,
   captureWindow,
 } = require('./capture');
+const { startDoubleTapCapture, stopDoubleTapCapture } = require('./double-tap');
 const { showToast, destroyToastWindow } = require('./toast-window');
 const { setSaveNotifier, setDuplicateNotifier, setTrayRefresher } = require('./notify');
 const { initUpdater } = require('./updater');
@@ -410,13 +411,38 @@ function createMainWindow() {
 
   trackWindowState(mainWindow);
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  // Show the window as soon as it's ready. A hidden window demotes the
+  // whole app to a background agent on macOS (dock icon vanishes, looks
+  // "closed"), so we make showing robust: ready-to-show is the happy
+  // path, did-finish-load is a backup, and a timeout is a last resort
+  // in case neither fires (e.g. the renderer stalls). All route through
+  // one idempotent revealWindow().
+  const revealWindow = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (process.platform === 'darwin') {
+      // Show the window AND pull the app to the foreground. Just calling
+      // mainWindow.show() leaves a terminal-spawned dev app as a hidden
+      // background agent (dock icon gone, window behind everything) —
+      // app.focus({steal:true}) promotes it to a normal foreground app.
+      try { app.dock.show(); } catch {}
+      try { app.focus({ steal: true }); } catch {}
+    }
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+  };
+  mainWindow.once('ready-to-show', revealWindow);
+  const revealFallback = setTimeout(revealWindow, 3000);
 
   // Renderer is ready to receive IPC events. Drain any queued
   // licensing deep-links that arrived before this point.
   mainWindow.webContents.once('did-finish-load', () => {
     rendererReady = true;
     drainLicenseTokenQueue();
+    revealWindow();
+  });
+  mainWindow.on('closed', () => {
+    clearTimeout(revealFallback);
+    mainWindow = null;
   });
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -447,15 +473,31 @@ function buildTrayIcon() {
   return icon;
 }
 
+// Bring the app to the foreground and show its window. On macOS a
+// windowless app gets demoted to a background process (no dock icon,
+// and a plain window.focus() won't foreground it) — so we explicitly
+// re-show the dock icon and steal focus, then show/restore the window.
+// This is the one reliable path back in from the tray.
+function showMainWindow() {
+  if (process.platform === 'darwin') {
+    try { app.dock.show(); } catch {}
+    try { app.focus({ steal: true }); } catch {}
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 function buildTrayMenuTemplate() {
   return [
-    { label: 'Open GatherOS', click: () => {
-      if (mainWindow) mainWindow.focus();
-      else createMainWindow();
-    }},
+    { label: 'Open GatherOS', click: showMainWindow },
     { type: 'separator' },
     { label: 'Capture Area  ⌘⇧S', click: startScreenshotCapture },
-    { label: 'Capture Fullscreen', click: captureFullscreen },
+    { label: 'Capture Fullscreen  ⌘⌘', click: captureFullscreen },
     { label: 'Capture Window…', click: captureWindow },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() },
@@ -476,10 +518,7 @@ function createTray() {
   tray.setToolTip('GatherOS');
   tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate()));
 
-  tray.on('click', () => {
-    if (mainWindow) mainWindow.focus();
-    else createMainWindow();
-  });
+  tray.on('click', showMainWindow);
 
   tray.on('drop-files', async (_e, files) => {
     for (const file of files) {
@@ -634,6 +673,15 @@ ipcMain.handle('library:switch', (_e, id) => {
 
 app.whenReady().then(() => {
   if (process.platform === 'darwin') {
+    // Force a regular (dock-visible) app. Guards against macOS leaving
+    // the process as a background/UIElement agent — which happens in dev
+    // when `electron .` is spawned as a grandchild of the terminal.
+    app.setActivationPolicy?.('regular');
+    app.dock.show()
+      .then(() => console.log('[dock] shown, activationPolicy=regular'))
+      .catch((e) => console.warn('[dock] show failed:', e?.message));
+  }
+  if (process.platform === 'darwin') {
     // Drive the macOS native chrome (title bar text, traffic-light
     // hover state, native scrollbars) off the same prefs.theme value
     // the renderer applies to <html data-theme>.
@@ -659,6 +707,14 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(buildAppMenu({ getMainWindow: () => mainWindow }));
   createTray();
   registerCaptureHotkey();
+  // Double-tap ⌘⌘ grabs the whole screen under the cursor and files it
+  // straight into the library — no crosshair, no selection step. (⌘⇧S
+  // stays the interactive area-select.)
+  startDoubleTapCapture(() => {
+    captureFullscreen().catch((err) =>
+      console.error('[moodmark] ⌘⌘ capture failed:', err),
+    );
+  });
   initUpdater(mainWindow);
 
   // Trash auto-purge: if the Settings → "Auto-empty trash" pref is
@@ -714,9 +770,7 @@ app.whenReady().then(() => {
     }
   }, 2500);
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
-  });
+  app.on('activate', showMainWindow);
 });
 
 app.on('window-all-closed', () => {
@@ -736,5 +790,6 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   unregisterCaptureHotkey();
+  stopDoubleTapCapture();
   closeDatabase();
 });
