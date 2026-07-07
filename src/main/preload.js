@@ -13,7 +13,7 @@ function grabVideoPoster(file) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { URL.revokeObjectURL(url); } catch { /* noop */ }
+      try { URL.revokeObjectURL(url); } catch { /* ignore */ }
       resolve(val);
     };
     // Guard against formats that never fire loadeddata/seeked.
