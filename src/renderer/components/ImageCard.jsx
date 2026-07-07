@@ -44,7 +44,15 @@ export default function ImageCard({
   staggerMs = 0,
   morphSource = false,
 }) {
-  const src = fileUrl(record.file_path);
+  // Grid always shows the generated thumbnail (a .jpg — including the
+  // poster frame for videos). Falling back to file_path only when a
+  // thumb is somehow missing. Using file_path directly here rendered
+  // .mp4/.mov saves as broken <img>s, since an <img> can't play video.
+  const src = fileUrl(record.thumb_path || record.file_path);
+  // Peek wants the full-res original for images, but for video the
+  // original won't render in an <img>, so peek falls back to the poster.
+  const isVideo = /\.(mp4|mov|webm|m4v)$/i.test(record.file_path || '');
+  const peekSrc = isVideo ? src : fileUrl(record.file_path);
   const aspect =
     record.width && record.height ? record.width / record.height : 4 / 3;
 
@@ -252,7 +260,7 @@ export default function ImageCard({
         )}
       </div>
 
-      {peeking && src && createPortal(
+      {peeking && peekSrc && createPortal(
         <div
           className={styles.lightbox}
           // Cursor can pass over the dim backdrop on its way to the
@@ -261,7 +269,7 @@ export default function ImageCard({
           aria-hidden="true"
         >
           <img
-            src={src}
+            src={peekSrc}
             alt=""
             className={styles.lightboxImage}
             decoding="async"
