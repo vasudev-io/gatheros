@@ -131,6 +131,7 @@ const {
   captureWindow,
 } = require('./capture');
 const extensionServer = require('./extension-server');
+const { startDoubleTapCapture, stopDoubleTapCapture } = require('./double-tap');
 const { showToast, destroyToastWindow } = require('./toast-window');
 const { setSaveNotifier, setDuplicateNotifier, setNeedsUpgradeNotifier, setBookmarkNotifier, setBookmarkFailedNotifier, setErrorNotifier, setTrayRefresher, notifyError } = require('./notify');
 const { initUpdater } = require('./updater');
@@ -1056,6 +1057,14 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(buildAppMenu({ getMainWindow: () => mainWindow }));
   createTray();
   registerCaptureHotkey();
+  // Double-tap ⌘⌘ grabs the whole screen under the cursor and files it
+  // straight into the library — no crosshair, no selection step. (⌘⇧S
+  // stays the interactive area-select.)
+  startDoubleTapCapture(() => {
+    captureFullscreen().catch((err) =>
+      console.error('[moodmark] ⌘⌘ capture failed:', err),
+    );
+  });
   extensionServer.start();
   // Drop the native-messaging host manifest into every Chromium-
   // family browser's user dir so the extension can connect without
@@ -1162,6 +1171,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   unregisterCaptureHotkey();
+  stopDoubleTapCapture();
   extensionServer.stop();
   closeDatabase();
 });
