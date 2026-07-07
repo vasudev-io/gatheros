@@ -187,25 +187,28 @@ export default function AppGate() {
     return <SigninScreen onRequestMagicLink={requestMagicLink} reason={reason} />;
   }
 
-  if (state.status === 'expired') {
-    return (
-      <PaywallModal
-        license={state.license}
-        onSignOut={signOut}
-        onSubscribe={async (plan) => {
-          // Hosted checkout: main process asks the worker to mint a
-          // checkout URL with our user_id baked in, then opens it in
-          // the user's default browser via shell.openExternal. We
-          // poll license/verify in the background (see effect above)
-          // so the paywall flips off as soon as the webhook lands.
-          const result = await window.moodmark.licensing.openCheckout(plan);
-          if (!result?.ok) {
-            console.error('[paywall] openCheckout failed:', result?.error);
-          }
-        }}
-      />
-    );
-  }
+  // ponytail: paywall disabled locally — expired licenses fall through
+  // to the app instead of the PaywallModal. Restore the block below to
+  // re-enable the paywall.
+  // if (state.status === 'expired') {
+  //   return (
+  //     <PaywallModal
+  //       license={state.license}
+  //       onSignOut={signOut}
+  //       onSubscribe={async (plan) => {
+  //         // Hosted checkout: main process asks the worker to mint a
+  //         // checkout URL with our user_id baked in, then opens it in
+  //         // the user's default browser via shell.openExternal. We
+  //         // poll license/verify in the background (see effect above)
+  //         // so the paywall flips off as soon as the webhook lands.
+  //         const result = await window.moodmark.licensing.openCheckout(plan);
+  //         if (!result?.ok) {
+  //           console.error('[paywall] openCheckout failed:', result?.error);
+  //         }
+  //       }}
+  //     />
+  //   );
+  // }
 
   // 'entitled' or 'offline' — let the app run. Layer the account
   // banner on top so payment-failed / offline states are surfaced
