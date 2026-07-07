@@ -32,9 +32,10 @@ async function saveImageFromBase64(dataUrl) {
 }
 
 async function saveImageFromFile(sourcePath) {
-  const sharp = require('sharp');
   const ext = path.extname(sourcePath).slice(1).toLowerCase() || 'png';
   const buffer = fs.readFileSync(sourcePath);
+  if (VIDEO_EXTS.has(ext)) return _writeVideoFile(buffer, ext);
+  const sharp = require('sharp');
   return _writeImageFiles(buffer, ext, sharp);
 }
 
@@ -44,6 +45,10 @@ async function saveImageFromBuffer(buffer, ext = 'png') {
 }
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp']);
+// Screen recordings the user already made. We don't transcode or probe —
+// the file is copied as-is and the grid renders it in a <video>, which
+// paints the first frame as its own poster. No ffmpeg, no thumbnails.
+const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v']);
 
 function extFromMime(mime) {
   if (!mime) return null;
@@ -183,6 +188,43 @@ async function _writeImageFiles(buffer, ext, sharp) {
     fileSize: storeBuffer.length,
     palette,
     contentHash,
+  };
+}
+
+// Copy an uploaded video (a screen recording the user dropped) into the
+// library as a kind='video' save. Same dedup-by-hash contract as
+// _writeImageFiles, but skips sharp/palette entirely and generates no
+// poster — thumb_path is left empty so ImageCard's <video> falls back to
+// painting its own first frame. The rest of the video render pipeline
+// (grid / focused / rediscover) already keys off kind='video'.
+// ponytail: no frame-grab poster — add a renderer-side canvas grab at
+// drop time if uploaded videos need a still in board/collection exports.
+async function _writeVideoFile(buffer, ext) {
+  const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
+  try {
+    const { findSaveByHash } = require('./db');
+    const existing = findSaveByHash(contentHash);
+    if (existing) {
+      return { duplicateOf: existing.id, existing };
+    }
+  } catch (err) {
+    console.warn('[gatheros] dedup lookup failed, treating as new:', err.message);
+  }
+
+  const id = crypto.randomUUID();
+  const filePath = path.join(getImagesDir(), `${id}.${ext}`);
+  fs.writeFileSync(filePath, buffer);
+
+  return {
+    id,
+    filePath,
+    thumbPath: '',
+    width: null,
+    height: null,
+    fileSize: buffer.length,
+    palette: null,
+    contentHash,
+    kind: 'video',
   };
 }
 
