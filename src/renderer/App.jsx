@@ -104,6 +104,13 @@ import { EntitlementProvider, requestUpgrade, PENDING_UPGRADE_KEY } from './cont
 import UpgradeModal from './components/UpgradeModal.jsx';
 import UpgradeBanner from './components/UpgradeBanner.jsx';
 
+// Importable = image or video. Screen recordings dropped from Finder are
+// usually .mov ("video/quicktime"), but some files arrive with an empty
+// MIME type, so fall back to the extension. Videos land as kind='video'
+// saves via saveImageFromFile → _writeVideoFile.
+const isImportableMedia = (f) =>
+  /^(image|video)\//.test(f.type) || /\.(mp4|mov|webm|m4v)$/i.test(f.name || '');
+
 // Lucide-backed icon shims. Component names are kept identical to
 // the previous inline SVG defs so every existing call site (right-
 // click menus, selection bar, focused-view toolbar, etc.) keeps
@@ -3142,7 +3149,7 @@ export default function App({ entitlement } = {}) {
     const items = [...e.dataTransfer.items];
     const couldBeImage = items.some(
       (i) =>
-        (i.kind === 'file' && i.type.startsWith('image/')) ||
+        (i.kind === 'file' && /^(image|video)\//.test(i.type)) ||
         (i.kind === 'string' &&
           (i.type === 'text/uri-list' || i.type === 'text/html')),
     );
@@ -3172,7 +3179,7 @@ export default function App({ entitlement } = {}) {
     const all = [...e.dataTransfer.files];
     const isZip = (f) => f.type === 'application/zip' || /\.zip$/i.test(f.name || '');
     const zips = all.filter(isZip);
-    const images = all.filter((f) => !isZip(f) && f.type.startsWith('image/'));
+    const images = all.filter((f) => !isZip(f) && isImportableMedia(f));
 
     if (zips.length > 0) {
       for (const file of zips) {
@@ -3352,7 +3359,7 @@ export default function App({ entitlement } = {}) {
     e.target.value = ''; // reset so re-picking the same file fires onChange again
     const isZip = (f) => f.type === 'application/zip' || /\.zip$/i.test(f.name || '');
     const zips = picked.filter(isZip);
-    const images = picked.filter((f) => !isZip(f) && f.type.startsWith('image/'));
+    const images = picked.filter((f) => !isZip(f) && isImportableMedia(f));
     if (zips.length === 0 && images.length === 0) return;
     for (const file of zips) {
       try {
@@ -3405,7 +3412,7 @@ export default function App({ entitlement } = {}) {
     if (!bucketId) return;
     const all = [...(fileList || [])];
     const isZip = (f) => f.type === 'application/zip' || /\.zip$/i.test(f.name || '');
-    const images = all.filter((f) => !isZip(f) && f.type && f.type.startsWith('image/'));
+    const images = all.filter((f) => !isZip(f) && isImportableMedia(f));
     const zips = all.filter(isZip);
 
     // Zips can't be associated with a specific bucket from here (the
@@ -3497,7 +3504,7 @@ export default function App({ entitlement } = {}) {
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,application/zip,.zip"
+        accept="image/*,video/*,application/zip,.zip"
         multiple
         style={{ display: 'none' }}
         onChange={handleFileInput}

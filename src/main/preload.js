@@ -1,5 +1,59 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// Decode one frame from a dropped video using the renderer's own media
+// stack (no ffmpeg) and return it as JPEG bytes for use as the save's
+// poster still. Resolves null on any failure or if decode stalls, so a
+// missing poster never blocks the save.
+function grabVideoPoster(file) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+      resolve(val);
+    };
+    // Guard against formats that never fire loadeddata/seeked.
+    const timer = setTimeout(() => finish(null), 3000);
+    const draw = () => {
+      try {
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+        if (!w || !h) return finish(null);
+        // Cap the longest edge so a 4K recording doesn't yield a
+        // multi-MB still — roughly the scale of the image thumbnails.
+        const scale = Math.min(1, 1024 / Math.max(w, h));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(w * scale);
+        canvas.height = Math.round(h * scale);
+        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(
+          async (blob) => finish(blob ? new Uint8Array(await blob.arrayBuffer()) : null),
+          'image/jpeg',
+          0.8,
+        );
+      } catch {
+        finish(null);
+      }
+    };
+    video.muted = true;
+    video.preload = 'auto';
+    video.onseeked = draw;
+    video.onerror = () => finish(null);
+    video.onloadeddata = () => {
+      // Nudge past a black leading frame; fall back to frame 0 for very
+      // short clips (onseeked then fires draw).
+      const t = Math.min(0.1, (video.duration || 0) / 2);
+      if (t > 0) video.currentTime = t;
+      else draw();
+    };
+    video.src = url;
+  });
+}
+
 // Pulled once at preload time so it's available synchronously to the
 // renderer (loading screen reads it during first paint).
 const appVersion = (() => {
@@ -62,12 +116,19 @@ contextBridge.exposeInMainWorld('moodmark', {
     exportBulkZip: (ids) => ipcRenderer.invoke('saves:export-bulk-zip', ids),
     confirmDelete: (count) => ipcRenderer.invoke('saves:confirm-delete', count),
     revealInFinder: (filePath) => ipcRenderer.invoke('saves:reveal-in-finder', filePath),
-    dropFile: (file) => {
+    dropFile: async (file) => {
       // Electron 32+ removed File.path; webUtils.getPathForFile is the
       // sanctioned replacement and must be called from the preload.
       const filePath = webUtils.getPathForFile(file);
-      if (!filePath) return Promise.reject(new Error('No filesystem path on dropped file'));
-      return ipcRenderer.invoke('saves:drop-file', filePath);
+      if (!filePath) throw new Error('No filesystem path on dropped file');
+      // For videos, grab a first-frame poster here (renderer media stack,
+      // no ffmpeg) so the save gets a still thumbnail. Null on any failure
+      // — main then leaves thumb_path empty and <video> paints its own
+      // first frame.
+      const isVideo = /^video\//.test(file.type || '')
+        || /\.(mp4|mov|webm|m4v)$/i.test(file.name || '');
+      const poster = isVideo ? await grabVideoPoster(file) : null;
+      return ipcRenderer.invoke('saves:drop-file', filePath, poster);
     },
     dropZip: (file) => {
       const filePath = webUtils.getPathForFile(file);

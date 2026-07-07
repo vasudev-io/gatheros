@@ -31,10 +31,11 @@ async function saveImageFromBase64(dataUrl) {
   return _writeImageFiles(buffer, ext, sharp);
 }
 
-async function saveImageFromFile(sourcePath) {
-  const sharp = require('sharp');
+async function saveImageFromFile(sourcePath, posterBytes) {
   const ext = path.extname(sourcePath).slice(1).toLowerCase() || 'png';
   const buffer = fs.readFileSync(sourcePath);
+  if (VIDEO_EXTS.has(ext)) return _writeVideoFile(buffer, ext, posterBytes);
+  const sharp = require('sharp');
   return _writeImageFiles(buffer, ext, sharp);
 }
 
@@ -44,6 +45,10 @@ async function saveImageFromBuffer(buffer, ext = 'png') {
 }
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp']);
+// Screen recordings the user already made. We don't transcode or probe —
+// the file is copied as-is and the grid renders it in a <video>, which
+// paints the first frame as its own poster. No ffmpeg, no thumbnails.
+const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v']);
 
 function extFromMime(mime) {
   if (!mime) return null;
@@ -183,6 +188,54 @@ async function _writeImageFiles(buffer, ext, sharp) {
     fileSize: storeBuffer.length,
     palette,
     contentHash,
+  };
+}
+
+// Copy an uploaded video (a screen recording the user dropped) into the
+// library as a kind='video' save. Same dedup-by-hash contract as
+// _writeImageFiles, but skips sharp/palette entirely. posterBytes is a
+// first-frame JPEG grabbed renderer-side (preload) — written as the
+// thumbnail so the grid card, board exports, and quick-look show a still.
+// When it's absent (grab failed) thumb_path stays empty and ImageCard's
+// <video> paints its own first frame. The video render pipeline (grid /
+// focused / rediscover) already keys off kind='video'.
+async function _writeVideoFile(buffer, ext, posterBytes) {
+  const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
+  try {
+    const { findSaveByHash } = require('./db');
+    const existing = findSaveByHash(contentHash);
+    if (existing) {
+      return { duplicateOf: existing.id, existing };
+    }
+  } catch (err) {
+    console.warn('[gatheros] dedup lookup failed, treating as new:', err.message);
+  }
+
+  const id = crypto.randomUUID();
+  const filePath = path.join(getImagesDir(), `${id}.${ext}`);
+  fs.writeFileSync(filePath, buffer);
+
+  let thumbPath = '';
+  if (posterBytes && posterBytes.length) {
+    thumbPath = path.join(getThumbsDir(), `${id}.jpg`);
+    try {
+      fs.writeFileSync(thumbPath, Buffer.from(posterBytes));
+    } catch (err) {
+      console.warn('[gatheros] video poster write failed:', err.message);
+      thumbPath = '';
+    }
+  }
+
+  return {
+    id,
+    filePath,
+    thumbPath,
+    width: null,
+    height: null,
+    fileSize: buffer.length,
+    palette: null,
+    contentHash,
+    kind: 'video',
   };
 }
 
