@@ -335,9 +335,9 @@ function registerIpcHandlers() {
 
   ipcMain.handle('saves:update', (_e, payload) => updateSave(payload));
 
-  ipcMain.handle('saves:drop-file', async (_e, filePath) => {
+  ipcMain.handle('saves:drop-file', async (_e, filePath, posterBytes) => {
     if (blockNewSave('save')) return { needsUpgrade: true };
-    const imgData = await saveImageFromFile(filePath);
+    const imgData = await saveImageFromFile(filePath, posterBytes);
     if (imgData.duplicateOf) {
       notifyDuplicate(imgData.existing);
       return imgData.existing;
