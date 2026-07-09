@@ -519,6 +519,11 @@ function notifyNeedsUpgrade(context) {
 // the user opted into get persisted; the rest are skipped to save cost.
 async function maybeAIIndexInBackground(record) {
   if (!record?.id || !record.file_path) return;
+  // Videos index via their first-frame poster — the vision call can't
+  // read a raw video file. No poster → nothing analyzable, skip (the
+  // "Index now" sweep skips poster-less videos by the same rule).
+  const imagePath = record.kind === 'video' ? record.thumb_path : record.file_path;
+  if (!imagePath) return;
   // No license session = paywall is in front of the user; AI features
   // would 401 at the proxy anyway, so skip the round-trip.
   if (!hasAiSession()) return;
@@ -535,7 +540,7 @@ async function maybeAIIndexInBackground(record) {
   }
 
   try {
-    const { title, description, text } = await analyzeImage(record.file_path);
+    const { title, description, text } = await analyzeImage(imagePath);
 
     const updates = { id: record.id };
     // Re-fetch before writing the AI title — the user may have typed

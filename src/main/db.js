@@ -1361,11 +1361,16 @@ function getSavesByIds(ids) {
 // successful processing pass we set ocr_text to '' instead of NULL
 // when no text is found, so re-runs don't keep re-processing the same
 // rows forever.
-const UNINDEXED_WHERE = 'embedding IS NULL OR ocr_text IS NULL';
+// Trashed rows are skipped, and videos only qualify when they have a
+// first-frame poster (thumb_path) — that's what the vision call indexes;
+// a raw video file would just fail sharp forever and pin the count.
+const UNINDEXED_WHERE = `deleted_at IS NULL
+  AND (embedding IS NULL OR ocr_text IS NULL)
+  AND (kind != 'video' OR thumb_path != '')`;
 
 function getUnindexedSaves() {
   return getDatabase()
-    .prepare(`SELECT id, file_path, title FROM saves WHERE ${UNINDEXED_WHERE} ORDER BY created_at DESC`)
+    .prepare(`SELECT id, file_path, thumb_path, kind, title FROM saves WHERE ${UNINDEXED_WHERE} ORDER BY created_at DESC`)
     .all();
 }
 
