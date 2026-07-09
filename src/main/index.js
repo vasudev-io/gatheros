@@ -133,7 +133,7 @@ const {
 const extensionServer = require('./extension-server');
 const { startDoubleTapCapture, stopDoubleTapCapture } = require('./double-tap');
 const { showToast, destroyToastWindow } = require('./toast-window');
-const { setSaveNotifier, setDuplicateNotifier, setNeedsUpgradeNotifier, setBookmarkNotifier, setBookmarkFailedNotifier, setErrorNotifier, setTrayRefresher, notifyError } = require('./notify');
+const { setSaveNotifier, setSaveUpdatedNotifier, setDuplicateNotifier, setNeedsUpgradeNotifier, setBookmarkNotifier, setBookmarkFailedNotifier, setErrorNotifier, setTrayRefresher, notifyError } = require('./notify');
 const { initUpdater } = require('./updater');
 const { getInitialOptions: getWindowInitialOptions, track: trackWindowState } = require('./window-state');
 const libraryRegistry = require('./library-registry');
@@ -1026,6 +1026,11 @@ app.whenReady().then(() => {
     }
   }
   setSaveNotifier(notifySaved);
+  setSaveUpdatedNotifier((record) => {
+    if (record && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('save:updated', record);
+    }
+  });
   setDuplicateNotifier(notifyDuplicateInRenderer);
   setNeedsUpgradeNotifier(notifyNeedsUpgrade);
   setBookmarkNotifier(notifyBookmarkSaved);
