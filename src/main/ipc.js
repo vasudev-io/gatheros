@@ -1094,6 +1094,25 @@ function registerIpcHandlers() {
     }),
   );
 
+  // Free-tier BYOK providers (Gemini: ~10-15 requests/min) rate-limit a
+  // backfill of ~100 saves almost immediately. On a 429, wait out the
+  // window and retry instead of counting the row as failed forever.
+  // ponytail: fixed 20s/45s waits; parse Retry-After if a provider needs it.
+  const isRateLimit = (err) =>
+    err?.code === 429 ||
+    /\b429\b|rate.?limit|RESOURCE_EXHAUSTED/i.test(err?.message || '');
+  async function withRateLimitRetry(fn) {
+    for (const waitMs of [20_000, 45_000]) {
+      try { return await fn(); }
+      catch (err) {
+        if (!isRateLimit(err)) throw err;
+        console.warn(`[ai] rate limited, retrying in ${waitMs / 1000}s`);
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
+    }
+    return fn();
+  }
+
   ipcMain.handle('ai:reindex-library', async (event) => {
     if (!hasAiSession()) return { ok: false, reason: 'no-session' };
     const targets = getUnindexedSaves();
@@ -1103,9 +1122,14 @@ function registerIpcHandlers() {
     let failed = 0;
     for (let i = 0; i < targets.length; i += 1) {
       const row = targets[i];
+      // Videos can't go through the vision call directly — index the
+      // first-frame poster instead. The sweep only returns videos that
+      // have one.
+      const imagePath = row.kind === 'video' ? row.thumb_path : row.file_path;
       event.sender.send('save:indexing-start', row.id);
       try {
-        const { title, description, text } = await analyzeImage(row.file_path);
+        const { title, description, text } = await withRateLimitRetry(() =>
+          analyzeImage(imagePath));
         const updates = { id: row.id };
         if (description) updates.aiDescription = description;
         // Always set ocr_text (empty string for no text) so the
@@ -1118,7 +1142,7 @@ function registerIpcHandlers() {
         const ocrSnippet = text ? text.slice(0, 300) : '';
         const embedSource = [title, description, ocrSnippet, tags].filter(Boolean).join('. ');
         if (embedSource) {
-          const vec = await embedText(embedSource);
+          const vec = await withRateLimitRetry(() => embedText(embedSource));
           updates.embedding = Buffer.from(new Float32Array(vec).buffer);
         }
 

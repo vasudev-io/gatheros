@@ -10,7 +10,7 @@ const {
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 
 const isDev = !app.isPackaged;
 const DEV_URL = 'http://localhost:5173';
@@ -221,6 +221,47 @@ async function startScreenshotCapture() {
   }
 }
 
+// AppleScript tab property per browser. Chromium-family dictionaries
+// (including Dia and Arc — verified via `sdef /Applications/Dia.app`)
+// call it "active tab"; Safari calls it "current tab".
+const BROWSER_TAB_PROPERTY = {
+  Dia: 'active tab',
+  Arc: 'active tab',
+  'Google Chrome': 'active tab',
+  'Brave Browser': 'active tab',
+  'Microsoft Edge': 'active tab',
+  Vivaldi: 'active tab',
+  Safari: 'current tab',
+};
+
+function execOut(cmd, args) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: 1500 }, (err, stdout) =>
+      resolve(err ? '' : String(stdout).trim()),
+    );
+  });
+}
+
+// If the frontmost app is a known browser, ask it for the active tab's
+// URL via AppleScript so the save carries its source. Best-effort: any
+// failure (unknown app, no window, script error, timeout) → null.
+// lsappinfo needs no TCC permission; the osascript triggers macOS's
+// one-time Automation consent prompt per browser.
+async function getFrontmostBrowserUrl() {
+  if (process.platform !== 'darwin') return null;
+  const asn = await execOut('/usr/bin/lsappinfo', ['front']);
+  if (!asn) return null;
+  const info = await execOut('/usr/bin/lsappinfo', ['info', '-only', 'name', asn]);
+  const name = (info.match(/"LSDisplayName"\s*=\s*"(.+)"/) || [])[1];
+  const tabProp = BROWSER_TAB_PROPERTY[name];
+  if (!tabProp) return null;
+  const url = await execOut('/usr/bin/osascript', [
+    '-e',
+    `tell application "${name}" to get URL of ${tabProp} of front window`,
+  ]);
+  return /^https?:\/\//.test(url) ? url : null;
+}
+
 // Shared tail for every screenshot path: store the buffer, detect a
 // duplicate, insert the save, auto-tag it #screenshot (so screenshots
 // are filterable/searchable as a group), and fire the right
@@ -229,7 +270,13 @@ async function persistScreenshot(buf, ext = 'png') {
   const { saveImageFromBuffer } = require('./storage');
   const { insertSave, addTagToSave } = require('./db');
   const { notifySaved, notifyDuplicate } = require('./notify');
-  const imgData = await saveImageFromBuffer(buf, ext);
+  // Sample the source URL alongside the image write — nothing shifts
+  // app focus between the capture and this point, so "frontmost" is
+  // still whatever the user was looking at.
+  const [sourceUrl, imgData] = await Promise.all([
+    getFrontmostBrowserUrl(),
+    saveImageFromBuffer(buf, ext),
+  ]);
   const tag = (saveId) => {
     try { addTagToSave({ saveId, name: 'screenshot' }); }
     catch (err) { console.warn('[capture] auto-tag #screenshot failed:', err); }
@@ -239,7 +286,7 @@ async function persistScreenshot(buf, ext = 'png') {
     notifyDuplicate(imgData.existing);
     return imgData.existing;
   }
-  const record = insertSave(imgData);
+  const record = insertSave({ ...imgData, sourceUrl });
   tag(record.id);
   notifySaved(record);
   return record;
