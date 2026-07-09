@@ -234,9 +234,9 @@ const BROWSER_TAB_PROPERTY = {
   Safari: 'current tab',
 };
 
-function execOut(cmd, args) {
+function execOut(cmd, args, timeout = 1500) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 1500 }, (err, stdout) =>
+    execFile(cmd, args, { timeout }, (err, stdout) =>
       resolve(err ? '' : String(stdout).trim()),
     );
   });
@@ -245,8 +245,10 @@ function execOut(cmd, args) {
 // If the frontmost app is a known browser, ask it for the active tab's
 // URL via AppleScript so the save carries its source. Best-effort: any
 // failure (unknown app, no window, script error, timeout) → null.
-// lsappinfo needs no TCC permission; the osascript triggers macOS's
-// one-time Automation consent prompt per browser.
+// lsappinfo needs no TCC permission. The osascript triggers macOS's
+// one-time Automation consent prompt per browser and blocks until the
+// user answers it, so it gets a long timeout — callers must never
+// await this on the save path (the prompt would stall the save).
 async function getFrontmostBrowserUrl() {
   if (process.platform !== 'darwin') return null;
   const asn = await execOut('/usr/bin/lsappinfo', ['front']);
@@ -258,7 +260,7 @@ async function getFrontmostBrowserUrl() {
   const url = await execOut('/usr/bin/osascript', [
     '-e',
     `tell application "${name}" to get URL of ${tabProp} of front window`,
-  ]);
+  ], 15_000);
   return /^https?:\/\//.test(url) ? url : null;
 }
 
@@ -268,15 +270,14 @@ async function getFrontmostBrowserUrl() {
 // notification. Returns the record (or the existing dup).
 async function persistScreenshot(buf, ext = 'png') {
   const { saveImageFromBuffer } = require('./storage');
-  const { insertSave, addTagToSave } = require('./db');
-  const { notifySaved, notifyDuplicate } = require('./notify');
-  // Sample the source URL alongside the image write — nothing shifts
-  // app focus between the capture and this point, so "frontmost" is
-  // still whatever the user was looking at.
-  const [sourceUrl, imgData] = await Promise.all([
-    getFrontmostBrowserUrl(),
-    saveImageFromBuffer(buf, ext),
-  ]);
+  const { insertSave, addTagToSave, updateSave, getSave } = require('./db');
+  const { notifySaved, notifyDuplicate, notifySaveUpdated } = require('./notify');
+  // Start the source-URL grab now — "frontmost" is still whatever the
+  // user was looking at — but never await it on the save path: the
+  // first-ever call blocks on macOS's Automation consent dialog, and
+  // waiting on that starved the first captures of their URL.
+  const urlPromise = getFrontmostBrowserUrl();
+  const imgData = await saveImageFromBuffer(buf, ext);
   const tag = (saveId) => {
     try { addTagToSave({ saveId, name: 'screenshot' }); }
     catch (err) { console.warn('[capture] auto-tag #screenshot failed:', err); }
@@ -286,9 +287,16 @@ async function persistScreenshot(buf, ext = 'png') {
     notifyDuplicate(imgData.existing);
     return imgData.existing;
   }
-  const record = insertSave({ ...imgData, sourceUrl });
+  const record = insertSave(imgData);
   tag(record.id);
   notifySaved(record);
+  // Patch the URL in whenever the grab resolves; the renderer picks it
+  // up via save:updated exactly like AI-index results.
+  urlPromise.then((url) => {
+    if (!url) return;
+    updateSave({ id: record.id, sourceUrl: url });
+    notifySaveUpdated(getSave(record.id));
+  }).catch((err) => console.warn('[capture] source-url patch failed:', err));
   return record;
 }
 

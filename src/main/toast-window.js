@@ -98,7 +98,13 @@ function ensureToastWindow() {
     },
   });
 
-  toastWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // skipTransformProcessType: Electron implements visibleOnFullScreen
+  // by flipping the whole app to the accessory activation policy, which
+  // removes the Dock icon the moment the first toast window is created
+  // (reproduced: ApplicationType Foreground → UIElement). We keep the
+  // Dock icon instead; the toast just won't float over fullscreen-space
+  // apps. ponytail: an NSPanel-type window could do both if it matters.
+  toastWin.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true });
   toastWin.setAlwaysOnTop(true, 'floating');
   // Start click-through; enabled only when there's a toast to interact with.
   toastWin.setIgnoreMouseEvents(true, { forward: true });
