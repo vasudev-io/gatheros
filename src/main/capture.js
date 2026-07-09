@@ -261,7 +261,20 @@ async function getFrontmostBrowserUrl() {
     '-e',
     `tell application "${name}" to get URL of ${tabProp} of front window`,
   ], 15_000);
-  return /^https?:\/\//.test(url) ? url : null;
+  if (!/^https?:\/\//.test(url)) return null;
+  // Dia's URL property reports the last committed navigation, not the
+  // live SPA route (x.com/home instead of the open thread — its JS
+  // escape hatch is gated behind a launch flag). The extension reports
+  // the live tab URL over the local server; prefer it when its origin
+  // matches what AppleScript said. ponytail: Dia-only — Chrome/Safari
+  // track pushState in the property already.
+  if (name === 'Dia') {
+    try {
+      const ext = require('./extension-server').getActiveTab();
+      if (ext?.url && new URL(ext.url).origin === new URL(url).origin) return ext.url;
+    } catch { /* hint is best-effort */ }
+  }
+  return url;
 }
 
 // Shared tail for every screenshot path: store the buffer, detect a

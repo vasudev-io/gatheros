@@ -134,21 +134,49 @@ async function localizeInstagramMedia(tweetMeta) {
   }
 }
 
-async function handleSave(req, res) {
-  // Defense in depth: the token is the real check, but rejecting
-  // anything that isn't a browser-extension origin keeps stray
-  // web-page fetches from even reaching the auth path.
+// Latest active-tab URL reported by the extension. Screenshot capture
+// prefers this over the AppleScript URL property, which in some
+// browsers (Dia) reports the last committed navigation instead of the
+// live SPA route (x.com/home instead of the open thread). In-memory
+// only — it's an advisory hint, not user data.
+let lastActiveTab = null;
+
+function getActiveTab() {
+  return lastActiveTab;
+}
+
+async function handleActiveTab(req, res) {
+  if (!checkAuth(req, res)) return;
+  try {
+    const body = await readJsonBody(req);
+    const url = typeof body.url === 'string' ? body.url.slice(0, 2048) : '';
+    if (/^https?:\/\//i.test(url)) lastActiveTab = { url, at: Date.now() };
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 400, { ok: false, error: err.message });
+  }
+}
+
+// Shared auth gate: extension-origin check (defense in depth — the
+// token is the real check, but rejecting anything that isn't a
+// browser-extension origin keeps stray web-page fetches from even
+// reaching the auth path) + the shared token.
+function checkAuth(req, res) {
   const origin = req.headers.origin || '';
   if (origin && !origin.startsWith('chrome-extension://') && !origin.startsWith('moz-extension://')) {
     sendJson(res, 403, { ok: false, error: 'forbidden origin' });
-    return;
+    return false;
   }
-
   const token = req.headers['x-gatheros-token'];
   if (!token || token !== getOrCreateToken()) {
     sendJson(res, 401, { ok: false, error: 'invalid token' });
-    return;
+    return false;
   }
+  return true;
+}
+
+async function handleSave(req, res) {
+  if (!checkAuth(req, res)) return;
 
   // Free tier: new saves require an upgrade. Surface the prompt in the
   // app window and tell the extension so it can show its own notice.
@@ -417,6 +445,10 @@ function start() {
       handleSave(req, res);
       return;
     }
+    if (req.method === 'POST' && req.url === '/active-tab') {
+      handleActiveTab(req, res);
+      return;
+    }
     sendJson(res, 404, { ok: false, error: 'not found' });
   });
 
@@ -435,4 +467,4 @@ function stop() {
   server = null;
 }
 
-module.exports = { start, stop, getOrCreateToken, PORT };
+module.exports = { start, stop, getOrCreateToken, getActiveTab, PORT };
