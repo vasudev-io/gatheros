@@ -39,22 +39,40 @@ licenseRoutes.get('/verify', async (c) => {
 
   const now = Date.now();
 
-  // Latest subscription row (there's usually exactly one per user;
-  // if a user re-subscribed we keep history but the most recent wins).
-  const sub = await c.env.DB.prepare(
+  // ALL of the user's subscription rows. A user can accumulate more
+  // than one (re-subscribe, plan switch, or a superseded subscription
+  // that later got a trailing cancel/expire webhook). Entitlement must
+  // be "does ANY subscription currently entitle them" — the old code
+  // trusted only the most-recently-updated row, so a trailing event on
+  // a dead subscription could drop a paying user to free.
+  const subsResult = await c.env.DB.prepare(
     `SELECT id, user_id, lemonsqueezy_subscription_id, status, plan,
             current_period_start, current_period_end,
             cancel_at_period_end, canceled_at, created_at, updated_at
        FROM subscriptions
       WHERE user_id = ?
-      ORDER BY updated_at DESC
-      LIMIT 1`,
+      ORDER BY updated_at DESC`,
   )
     .bind(user.id)
-    .first<SubscriptionRow>();
+    .all<SubscriptionRow>();
+  const rows = subsResult.results ?? [];
+
+  const entitlingRows = rows.filter((r) => ENTITLED_SUB_STATUSES.has(r.status));
+  const entitledViaSub = entitlingRows.length > 0;
+
+  // Which subscription to report back for display. Prefer a real paid
+  // one (non-trialing entitling row with the furthest period end — the
+  // live subscription), then any entitling row, then the most-recent
+  // row so the client can still show status/plan for an expired user.
+  const sub =
+    entitlingRows
+      .filter((r) => r.status !== 'trialing')
+      .sort((a, b) => (b.current_period_end ?? 0) - (a.current_period_end ?? 0))[0]
+    || entitlingRows[0]
+    || rows[0]
+    || null;
 
   const inTrial = user.trial_ends_at > now;
-  const entitledViaSub = !!sub && ENTITLED_SUB_STATUSES.has(sub.status);
 
   let reason: 'trial' | 'subscription' | 'expired';
   if (entitledViaSub) reason = 'subscription';

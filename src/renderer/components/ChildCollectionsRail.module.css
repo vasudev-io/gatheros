@@ -5,8 +5,13 @@
 
 .rail {
   padding: 16px 20px 0;
-  /* Pull the grid below up tight against the rail. */
-  margin-bottom: -12px;
+  /* Pull the grid below up toward the rail — but not past the pills'
+     actual bottom. The row carries ~6px of clip padding below the pills
+     (see .row), so a margin-bottom more negative than that pulls the
+     next flex item (the grid, which paints an opaque background) up
+     OVER the pills' bottom edge, which reads as the pill being clipped
+     when the collection is empty. Keep a small buffer. */
+  margin-bottom: -4px;
 }
 
 .label {
