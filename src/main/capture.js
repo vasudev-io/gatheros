@@ -10,7 +10,7 @@ const {
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 
 const isDev = !app.isPackaged;
 const DEV_URL = 'http://localhost:5173';
@@ -221,14 +221,75 @@ async function startScreenshotCapture() {
   }
 }
 
+// AppleScript tab property per browser. Chromium-family dictionaries
+// (including Dia and Arc — verified via `sdef /Applications/Dia.app`)
+// call it "active tab"; Safari calls it "current tab".
+const BROWSER_TAB_PROPERTY = {
+  Dia: 'active tab',
+  Arc: 'active tab',
+  'Google Chrome': 'active tab',
+  'Brave Browser': 'active tab',
+  'Microsoft Edge': 'active tab',
+  Vivaldi: 'active tab',
+  Safari: 'current tab',
+};
+
+function execOut(cmd, args, timeout = 1500) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout }, (err, stdout) =>
+      resolve(err ? '' : String(stdout).trim()),
+    );
+  });
+}
+
+// If the frontmost app is a known browser, ask it for the active tab's
+// URL via AppleScript so the save carries its source. Best-effort: any
+// failure (unknown app, no window, script error, timeout) → null.
+// lsappinfo needs no TCC permission. The osascript triggers macOS's
+// one-time Automation consent prompt per browser and blocks until the
+// user answers it, so it gets a long timeout — callers must never
+// await this on the save path (the prompt would stall the save).
+async function getFrontmostBrowserUrl() {
+  if (process.platform !== 'darwin') return null;
+  const asn = await execOut('/usr/bin/lsappinfo', ['front']);
+  if (!asn) return null;
+  const info = await execOut('/usr/bin/lsappinfo', ['info', '-only', 'name', asn]);
+  const name = (info.match(/"LSDisplayName"\s*=\s*"(.+)"/) || [])[1];
+  const tabProp = BROWSER_TAB_PROPERTY[name];
+  if (!tabProp) return null;
+  const url = await execOut('/usr/bin/osascript', [
+    '-e',
+    `tell application "${name}" to get URL of ${tabProp} of front window`,
+  ], 15_000);
+  if (!/^https?:\/\//.test(url)) return null;
+  // Dia's URL property reports the last committed navigation, not the
+  // live SPA route (x.com/home instead of the open thread — its JS
+  // escape hatch is gated behind a launch flag). The extension reports
+  // the live tab URL over the local server; prefer it when its origin
+  // matches what AppleScript said. ponytail: Dia-only — Chrome/Safari
+  // track pushState in the property already.
+  if (name === 'Dia') {
+    try {
+      const ext = require('./extension-server').getActiveTab();
+      if (ext?.url && new URL(ext.url).origin === new URL(url).origin) return ext.url;
+    } catch { /* hint is best-effort */ }
+  }
+  return url;
+}
+
 // Shared tail for every screenshot path: store the buffer, detect a
 // duplicate, insert the save, auto-tag it #screenshot (so screenshots
 // are filterable/searchable as a group), and fire the right
 // notification. Returns the record (or the existing dup).
 async function persistScreenshot(buf, ext = 'png') {
   const { saveImageFromBuffer } = require('./storage');
-  const { insertSave, addTagToSave } = require('./db');
-  const { notifySaved, notifyDuplicate } = require('./notify');
+  const { insertSave, addTagToSave, updateSave, getSave } = require('./db');
+  const { notifySaved, notifyDuplicate, notifySaveUpdated } = require('./notify');
+  // Start the source-URL grab now — "frontmost" is still whatever the
+  // user was looking at — but never await it on the save path: the
+  // first-ever call blocks on macOS's Automation consent dialog, and
+  // waiting on that starved the first captures of their URL.
+  const urlPromise = getFrontmostBrowserUrl();
   const imgData = await saveImageFromBuffer(buf, ext);
   const tag = (saveId) => {
     try { addTagToSave({ saveId, name: 'screenshot' }); }
@@ -242,6 +303,13 @@ async function persistScreenshot(buf, ext = 'png') {
   const record = insertSave(imgData);
   tag(record.id);
   notifySaved(record);
+  // Patch the URL in whenever the grab resolves; the renderer picks it
+  // up via save:updated exactly like AI-index results.
+  urlPromise.then((url) => {
+    if (!url) return;
+    updateSave({ id: record.id, sourceUrl: url });
+    notifySaveUpdated(getSave(record.id));
+  }).catch((err) => console.warn('[capture] source-url patch failed:', err));
   return record;
 }
 

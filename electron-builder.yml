@@ -38,6 +38,7 @@ asarUnpack:
   # reads on it at runtime — reading a zip from inside an asar is
   # not reliably supported on every platform.
   - src/main/starter-pack.zip
+  - node_modules/uiohook-napi/**/*
 mac:
   category: public.app-category.productivity
   # Strip Electron's bundled non-English locales. macOS Sequoia

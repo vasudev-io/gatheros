@@ -131,8 +131,9 @@ const {
   captureWindow,
 } = require('./capture');
 const extensionServer = require('./extension-server');
+const { startDoubleTapCapture, stopDoubleTapCapture } = require('./double-tap');
 const { showToast, destroyToastWindow } = require('./toast-window');
-const { setSaveNotifier, setDuplicateNotifier, setNeedsUpgradeNotifier, setBookmarkNotifier, setBookmarkFailedNotifier, setErrorNotifier, setTrayRefresher, notifyError } = require('./notify');
+const { setSaveNotifier, setSaveUpdatedNotifier, setDuplicateNotifier, setNeedsUpgradeNotifier, setBookmarkNotifier, setBookmarkFailedNotifier, setErrorNotifier, setTrayRefresher, notifyError } = require('./notify');
 const { initUpdater } = require('./updater');
 const { getInitialOptions: getWindowInitialOptions, track: trackWindowState } = require('./window-state');
 const libraryRegistry = require('./library-registry');
@@ -518,6 +519,11 @@ function notifyNeedsUpgrade(context) {
 // the user opted into get persisted; the rest are skipped to save cost.
 async function maybeAIIndexInBackground(record) {
   if (!record?.id || !record.file_path) return;
+  // Videos index via their first-frame poster — the vision call can't
+  // read a raw video file. No poster → nothing analyzable, skip (the
+  // "Index now" sweep skips poster-less videos by the same rule).
+  const imagePath = record.kind === 'video' ? record.thumb_path : record.file_path;
+  if (!imagePath) return;
   // No license session = paywall is in front of the user; AI features
   // would 401 at the proxy anyway, so skip the round-trip.
   if (!hasAiSession()) return;
@@ -534,7 +540,7 @@ async function maybeAIIndexInBackground(record) {
   }
 
   try {
-    const { title, description, text } = await analyzeImage(record.file_path);
+    const { title, description, text } = await analyzeImage(imagePath);
 
     const updates = { id: record.id };
     // Re-fetch before writing the AI title — the user may have typed
@@ -1020,6 +1026,11 @@ app.whenReady().then(() => {
     }
   }
   setSaveNotifier(notifySaved);
+  setSaveUpdatedNotifier((record) => {
+    if (record && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('save:updated', record);
+    }
+  });
   setDuplicateNotifier(notifyDuplicateInRenderer);
   setNeedsUpgradeNotifier(notifyNeedsUpgrade);
   setBookmarkNotifier(notifyBookmarkSaved);
@@ -1056,6 +1067,14 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(buildAppMenu({ getMainWindow: () => mainWindow }));
   createTray();
   registerCaptureHotkey();
+  // Double-tap ⌘⌘ grabs the whole screen under the cursor and files it
+  // straight into the library — no crosshair, no selection step. (⌘⇧S
+  // stays the interactive area-select.)
+  startDoubleTapCapture(() => {
+    captureFullscreen().catch((err) =>
+      console.error('[moodmark] ⌘⌘ capture failed:', err),
+    );
+  });
   extensionServer.start();
   // Drop the native-messaging host manifest into every Chromium-
   // family browser's user dir so the extension can connect without
@@ -1162,6 +1181,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   unregisterCaptureHotkey();
+  stopDoubleTapCapture();
   extensionServer.stop();
   closeDatabase();
 });

@@ -8,6 +8,39 @@
 
 const HOST_NAME = 'co.gatheros.host';
 const MENU_ID = 'gatheros-save-image';
+
+// ── Active-tab URL reporting ────────────────────────────────────────
+// The desktop app stamps ⌘⌘ screenshots with the frontmost browser
+// tab's URL via AppleScript, but some browsers (Dia) report the last
+// committed navigation there, not the live SPA route — x.com/home
+// instead of the open thread. chrome.tabs always has the live URL, so
+// report it to the app on every activation / navigation / window
+// focus; the app prefers this hint when its origin matches what
+// AppleScript said. Dedup'd so idle browsing sends nothing.
+let lastReportedUrl = null;
+async function reportActiveTab(tab) {
+  const url = tab?.url || '';
+  if (!tab?.active || !/^https?:/i.test(url) || url === lastReportedUrl) return;
+  lastReportedUrl = url;
+  try {
+    await chrome.runtime.sendNativeMessage(HOST_NAME, { type: 'active-tab', url });
+  } catch {
+    lastReportedUrl = null; // host unreachable — retry on the next event
+  }
+}
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  try { await reportActiveTab(await chrome.tabs.get(tabId)); } catch { /* tab gone */ }
+});
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url) reportActiveTab(tab);
+});
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, windowId });
+    if (tab) await reportActiveTab(tab);
+  } catch { /* window gone */ }
+});
 // chrome.alarms identifier for the recurring "check x.com for new
 // bookmarks" job. Two minutes balances "phone bookmarks appear
 // promptly" against "don't hammer twitter for users who never

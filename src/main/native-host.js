@@ -190,14 +190,14 @@ async function ensureAppRunning({ background = false } = {}) {
   return false;
 }
 
-function postToApp(body, token) {
+function postToApp(body, token, path = '/save') {
   return new Promise((resolve) => {
     const payload = Buffer.from(JSON.stringify(body), 'utf8');
     const req = http.request(
       {
         host: SERVER_HOST,
         port: SERVER_PORT,
-        path: '/save',
+        path,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -294,6 +294,17 @@ async function handleMessage(msg) {
     );
     debug('handleMessage: save result', JSON.stringify(result.body).slice(0, 200));
     writeMessage(result.body);
+    return;
+  }
+  if (msg.type === 'active-tab') {
+    // Advisory hint so screenshot captures can stamp the live SPA URL
+    // (the AppleScript URL property goes stale on pushState in Dia).
+    // Never launch the app for this — if it's down there's nothing to
+    // stamp; just report ok:false and move on.
+    const token = readToken();
+    if (!token) { writeMessage({ ok: false }); return; }
+    const result = await postToApp({ url: msg.url || null }, token, '/active-tab');
+    writeMessage({ ok: result.ok });
     return;
   }
   writeMessage({ ok: false, error: `unknown message type: ${msg.type}` });

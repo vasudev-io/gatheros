@@ -60,6 +60,19 @@ function notifySaved(record) {
   savedNotifier(record);
 }
 
+// A background mutation (e.g. the async source-URL grab) patched an
+// existing save; forwards the full record to the renderer's
+// save:updated channel so the open grid/detail view updates in place.
+let saveUpdatedNotifier = () => {};
+
+function setSaveUpdatedNotifier(fn) {
+  saveUpdatedNotifier = typeof fn === 'function' ? fn : () => {};
+}
+
+function notifySaveUpdated(record) {
+  try { saveUpdatedNotifier(record); } catch { /* best-effort */ }
+}
+
 function notifyDuplicate(existing) {
   duplicateNotifier(existing);
 }
@@ -84,6 +97,8 @@ function refreshTray() {
 
 module.exports = {
   setSaveNotifier,
+  setSaveUpdatedNotifier,
+  notifySaveUpdated,
   setDuplicateNotifier,
   setNeedsUpgradeNotifier,
   setBookmarkNotifier,

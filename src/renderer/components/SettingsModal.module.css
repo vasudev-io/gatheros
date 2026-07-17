@@ -1135,6 +1135,28 @@
   background-repeat: no-repeat;
 }
 
+/* Free-form text input — the API key / base URL / model-override
+   fields on the AI page. Mirrors .select minus the dropdown chrome. */
+.textInput {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-ui);
+  font-size: var(--text-md);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.textInput:focus {
+  border-color: var(--text-secondary);
+}
+
+.textInput::placeholder {
+  color: var(--text-tertiary);
+}
+
 /* Segmented picker — used for theme, mode, capture mode. The
    active option fills with --text-primary on a hairline-pill
    surface. */
