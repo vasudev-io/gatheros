@@ -87,30 +87,11 @@ function build(mode, trial, server) {
 }
 
 function getEntitlement() {
-  ensureTrialDecided();
-  const server = serverState();
-  const trial = localTrial();
-  const sub = server && server.subscription;
-
-  // Active paid subscription → unlocked forever.
-  if (server.state === 'entitled' && sub && sub.status !== 'trialing') {
-    return build('paid', trial, server);
-  }
-  // Any other entitled / offline-grace state (incl. server trial) → allow.
-  if (server.state === 'entitled' || server.state === 'offline') {
-    return build('trial', trial, server);
-  }
-  // Local trial still running → allow.
-  if (trial.active) return build('trial', trial, server);
-  // Couldn't determine the server state → fail open, don't downgrade.
-  if (server.state === 'error') return build('trial', trial, server);
-  // Confirmed: server says expired, or never signed in and the local trial
-  // is spent → free tier.
-  if (server.state === 'expired' || server.state === 'unauth') {
-    return build('free', trial, server);
-  }
-  // Anything unexpected → fail open.
-  return build('trial', trial, server);
+  // ponytail: paywall removed for this personal build — always report
+  // 'paid' so every gate (save cap, pro features, upgrade prompts)
+  // stays open. Restore the trial/free resolution from git history to
+  // re-enable gating.
+  return build('paid', localTrial(), serverState());
 }
 
 // Cheap boolean guard for save entry points. Fails OPEN — if anything
