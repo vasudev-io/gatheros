@@ -63,10 +63,19 @@ async function postAi(path, body) {
     headers,
     body: JSON.stringify(out),
   });
-  const data = await res.json().catch(() => ({}));
+  const raw = await res.text();
+  let data = {};
+  try { data = JSON.parse(raw); } catch { /* keep raw for the error line */ }
   if (!res.ok) {
-    const reason = (data.error && (data.error.message || data.error)) || `http_${res.status}`;
-    const err = new Error(`AI ${reason}`);
+    // Gemini's OpenAI-compat layer wraps errors in an array; plain
+    // OpenAI uses an object. Fall through to the raw body so a
+    // quota/deprecation message is never reduced to just "http_429"
+    // (that masking hid a dead default model for a week).
+    const errObj = Array.isArray(data) ? data[0]?.error : data.error;
+    const reason = (errObj && (errObj.message || errObj))
+      || (raw && raw.slice(0, 300))
+      || `http_${res.status}`;
+    const err = new Error(`AI ${res.status}: ${reason}`);
     err.code = res.status;
     throw err;
   }

@@ -12,7 +12,7 @@ assert.equal(buildConfig('').mode, 'proxy');
 const g = buildConfig('gemini', {}, 'k');
 assert.equal(g.mode, 'byok');
 assert.equal(g.baseUrl, 'https://generativelanguage.googleapis.com/v1beta/openai');
-assert.equal(g.visionModel, 'gemini-2.0-flash');
+assert.equal(g.visionModel, 'gemini-2.5-flash');
 assert.equal(g.embedModel, 'gemini-embedding-001');
 assert.equal(g.requiresKey, true);
 assert.equal(g.apiKey, 'k');

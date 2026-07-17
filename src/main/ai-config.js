@@ -26,7 +26,10 @@ const KEY_FILE = 'ai-provider-key.bin';
 const PRESETS = {
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    visionModel: 'gemini-2.0-flash',
+    // gemini-2.0-flash was deprecated 2026-03-03 and its free-tier
+    // quota zeroed — every request 429s ("limit: 0") on free keys.
+    // The free tier now centers on the 2.5 family.
+    visionModel: 'gemini-2.5-flash',
     embedModel: 'gemini-embedding-001',
     requiresKey: true,
   },
