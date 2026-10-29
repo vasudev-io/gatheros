@@ -2,32 +2,62 @@ name = "gatheros-api"
 main = "src/index.ts"
 compatibility_date = "2025-01-15"
 
-# D1: licensing database. Run `npm run db:create` once, then paste
-# the printed database_id below before deploying.
+# D1 licensing + inbox database.
+#
+# The all-zero id is a local-dev sentinel. It is not a real database,
+# and it is intentionally not the upstream GatherOS database. `wrangler
+# dev` and `wrangler d1 migrations apply --local` work with it.
+# Before any remote command, replace it with the id printed by
+# `npx wrangler d1 create gatheros-db`. `npm run deploy` and
+# `npm run db:migrate:remote` refuse the sentinel.
 [[d1_databases]]
 binding = "DB"
 database_name = "gatheros-db"
-database_id = "4ee66c06-85c5-4b0d-9286-051a4276a99c"
+database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
-# Non-secret config. Secrets go through `wrangler secret put` so they
-# never end up in source control. See server/README.md for the full
-# list of secrets the worker needs.
+# Original bytes for inbox items, keyed users/<user_id>/inbox/<item_id>/original.
+# Create once before the first deploy:
+#   npx wrangler r2 bucket create gatheros-assets
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "gatheros-assets"
+
+# Daily inbox retention sweep. 07:15 UTC.
+[triggers]
+crons = ["15 7 * * *"]
+
+# Non-secret config. Secrets go through `wrangler secret put`.
+# See server/README.md.
 [vars]
 APP_NAME = "GatherOS"
-# 0 disables the server-side trial entirely — users go straight to
-# the paywall after first sign-in. Lemon Squeezy's variant-level
-# trial is the only trial the user ever sees.
+# 0 disables the server-side trial. Lemon Squeezy's own trial, when
+# you configure one, is the trial a signed-in user sees.
 TRIAL_DAYS = "0"
-# Custom URL scheme the desktop app registers. Magic-link emails point
-# at https://api.gatheros.co/auth/verify?token=… which redirects
-# into this scheme so the app picks up the session token natively.
 APP_DEEP_LINK_SCHEME = "gatheros"
-EMAIL_FROM = "GatherOS <noreply@mail.gatheros.co>"
-# 'true' = Lemon Squeezy test mode, 'false' = live. Affects which
-# checkouts the worker creates. Webhook signature verification works
-# the same in either mode.
-LEMONSQUEEZY_TEST_MODE = "false"
-LEMONSQUEEZY_STORE_ID = "368336"
-LEMONSQUEEZY_VARIANT_MONTHLY = "1708182"
-LEMONSQUEEZY_VARIANT_YEARLY = "1708191"
+# Change this to an address on a domain you have verified in Resend
+# before sending real magic-link email. Stub mode (RESEND_API_KEY=stub)
+# never sends.
+EMAIL_FROM = "GatherOS <noreply@example.com>"
+LEMONSQUEEZY_TEST_MODE = "true"
+# Your Lemon Squeezy store. Leave blank until you create products;
+# checkout and the customer portal then return billing_not_configured
+# instead of calling Lemon Squeezy with someone else's catalog.
+LEMONSQUEEZY_STORE_ID = ""
+LEMONSQUEEZY_VARIANT_MONTHLY = ""
+LEMONSQUEEZY_VARIANT_YEARLY = ""
+
+# Inbox limits. Decimal byte counts and millisecond windows.
+INBOX_MAX_ASSET_BYTES = "10485760"
+INBOX_DAILY_ITEM_LIMIT = "50"
+INBOX_DAILY_USER_LIMIT = "200"
+INBOX_PENDING_BYTES_CAP = "262144000"
+INBOX_MAX_ACTIVE_TOKENS = "5"
+# Delivered / failed asset bytes are removed 7 days after ack.
+INBOX_DELIVERED_RETENTION_MS = "604800000"
+# Pending items that the desktop never pulls are removed after 30 days.
+INBOX_PENDING_RETENTION_MS = "2592000000"
+INBOX_NOTE_MAX = "1000"
+# Browser origins allowed to call POST /mcp. Non-browser MCP clients
+# omit Origin and are allowed. The MCP inspector defaults to port 6274.
+MCP_ALLOWED_ORIGINS = "http://localhost:6274,http://127.0.0.1:6274"

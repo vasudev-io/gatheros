@@ -679,6 +679,11 @@ function createMainWindow() {
     );
   }
 
+  mainWindow.on('focus', () => {
+    try { require('./inbox').onWindowFocus(); }
+    catch (err) { console.warn('[inbox] focus pull failed:', err?.message || err); }
+  });
+
   return mainWindow;
 }
 
@@ -1067,6 +1072,8 @@ app.whenReady().then(() => {
   createTray();
   registerCaptureHotkey();
   extensionServer.start();
+  try { require('./inbox').startInbox(); }
+  catch (err) { console.warn('[inbox] start failed:', err?.message || err); }
   // Drop the native-messaging host manifest into every Chromium-
   // family browser's user dir so the extension can connect without
   // the user ever touching the filesystem.

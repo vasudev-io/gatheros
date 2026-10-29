@@ -14,6 +14,7 @@ import {
   FileArchive as FileArchiveIcon,
   Eraser as EraserIcon,
   RefreshCw as SyncIcon,
+  Inbox as InboxIcon,
 } from 'lucide-react';
 import styles from './SettingsModal.module.css';
 import { confirm } from '../lib/confirm.js';
@@ -22,6 +23,7 @@ import AcknowledgmentsModal from './AcknowledgmentsModal.jsx';
 import PrivacyModal from './PrivacyModal.jsx';
 import { requestUpgrade, useEntitlementValue } from '../context/entitlement.jsx';
 import { priceSummary, YEARLY_SAVINGS } from '../lib/pricing.js';
+import InboxSettings from './InboxSettings.jsx';
 
 const SUPPORT_EMAIL = 'hey@gatheros.co';
 
@@ -38,6 +40,7 @@ const NAV_ITEMS = [
   { id: 'tags',       label: 'Tags',       Icon: Hash },
   { id: 'capture',    label: 'Capture',    Icon: CameraIcon },
   { id: 'syncing',    label: 'Syncing',    Icon: SyncIcon },
+  { id: 'inbox',      label: 'Inbox',      Icon: InboxIcon },
   { id: 'updates',    label: 'Updates',    Icon: DownloadIcon },
   { id: 'storage',    label: 'Storage',    Icon: HardDriveIcon },
   { id: 'data',       label: 'Data',       Icon: Database },
@@ -1455,6 +1458,14 @@ export default function SettingsModal({
                 </span>
               </div>
             </div>
+          )}
+
+          {activePage === 'inbox' && (
+            <InboxSettings
+              prefs={prefs}
+              updatePref={updatePref}
+              signedIn={hasAi}
+            />
           )}
 
           {activePage === 'syncing' && (

@@ -20,6 +20,21 @@ import {
 
 export const RELEASE_NOTES = [
   {
+    version: '0.10.0',
+    items: [
+      {
+        Icon: CardsIcon,
+        title: 'An inbox for your assistant',
+        description: 'Turn on Inbox in Settings and an assistant can send images and links into a collection you choose. You create the token, and you can revoke it.',
+      },
+      {
+        Icon: PermissionIcon,
+        title: 'Inbox items are temporary on the server',
+        description: 'Until your Mac pulls them in, those items sit in your account, then the copies there are deleted. The privacy policy explains the window.',
+      },
+    ],
+  },
+  {
     version: '0.8.0',
     items: [
       {

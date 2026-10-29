@@ -2,6 +2,9 @@
 // `wrangler secret put`. Hono uses this to type c.env.
 export type Env = {
   DB: D1Database;
+  // Inbox image bytes. Absent only in a misconfigured dev session;
+  // routes that need it return asset_storage_unconfigured.
+  ASSETS?: R2Bucket;
 
   // [vars]
   APP_NAME: string;
@@ -16,6 +19,19 @@ export type Env = {
   LEMONSQUEEZY_STORE_ID: string;
   LEMONSQUEEZY_VARIANT_MONTHLY: string;
   LEMONSQUEEZY_VARIANT_YEARLY: string;
+
+  // Inbox limits and the browser origins allowed to call /mcp.
+  // All optional so a Worker that hasn't set them yet keeps working
+  // with the defaults in inbox-validate.ts.
+  INBOX_MAX_ASSET_BYTES?: string;
+  INBOX_DAILY_ITEM_LIMIT?: string;
+  INBOX_DAILY_USER_LIMIT?: string;
+  INBOX_PENDING_BYTES_CAP?: string;
+  INBOX_MAX_ACTIVE_TOKENS?: string;
+  INBOX_DELIVERED_RETENTION_MS?: string;
+  INBOX_PENDING_RETENTION_MS?: string;
+  INBOX_NOTE_MAX?: string;
+  MCP_ALLOWED_ORIGINS?: string;
 
   // Secrets (set via `wrangler secret put`)
   RESEND_API_KEY: string;

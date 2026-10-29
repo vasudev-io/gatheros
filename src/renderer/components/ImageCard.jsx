@@ -457,6 +457,9 @@ function ImageCard({
             style={morphSource ? { viewTransitionName: 'morph-image' } : undefined}
           />
         ))}
+        {record?.source === 'inbox' && !isTweet && (
+          <span className={styles.inboxBadge}>Inbox</span>
+        )}
         {articleMeta && (
           // Title (+ short excerpt) banded over the cover, with an X glyph
           // so it reads as an article card rather than a plain image.

@@ -40,7 +40,15 @@ async function saveImageFromFile(sourcePath, posterBytes) {
 }
 
 async function saveImageFromBuffer(buffer, ext = 'png') {
+  if (!buffer || !buffer.length) throw new Error('Empty image');
   const sharp = require('sharp');
+  // Decode before writing. A non-image (HTML, text, svg) throws here
+  // so the inbox can't land an unreadable file in the library.
+  try {
+    await sharp(buffer).metadata();
+  } catch {
+    throw new Error('Response is not an image');
+  }
   return _writeImageFiles(buffer, ext, sharp);
 }
 
@@ -84,8 +92,9 @@ function videoExtFromMime(mime) {
   return /^[a-z0-9]{2,4}$/.test(ext) ? ext : 'mp4';
 }
 
-async function saveImageFromUrl(url) {
+async function saveImageFromUrl(url, options = {}) {
   const sharp = require('sharp');
+  const maxBytes = options && Number(options.maxBytes) > 0 ? Number(options.maxBytes) : 0;
 
   if (url.startsWith('data:')) {
     return saveImageFromBase64(url);
@@ -106,10 +115,13 @@ async function saveImageFromUrl(url) {
     throw new Error(`Failed to fetch image: ${res.status} ${res.statusText}`);
   }
   const contentType = res.headers.get('content-type') || '';
+  const advertised = Number(res.headers.get('content-length') || 0);
+  if (maxBytes && advertised > maxBytes) throw new Error('Image exceeds size cap');
   const buffer = Buffer.from(await res.arrayBuffer());
   if (buffer.length === 0) {
     throw new Error('Empty image response');
   }
+  if (maxBytes && buffer.length > maxBytes) throw new Error('Image exceeds size cap');
   // The URL was sent as an image but actually served a video — e.g. a
   // Cosmos video save, whose cdn URL returns mp4 regardless of the
   // ?format=webp hint. Save it as a video (from the bytes we already

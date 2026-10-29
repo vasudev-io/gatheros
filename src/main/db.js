@@ -437,6 +437,21 @@ const MIGRATIONS = [
   (database) => {
     addColumnIfMissing(database, 'collections', 'cover_save_id', 'TEXT');
   },
+  // Local record of inbox items already imported. If an ack was lost,
+  // the next pull sees the receipt and does not write a second save.
+  (database) => {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS inbox_receipts (
+        item_id     TEXT PRIMARY KEY,
+        save_id     TEXT,
+        result      TEXT,
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        last_error  TEXT,
+        received_at INTEGER,
+        acked_at    INTEGER
+      );
+    `);
+  },
 ];
 
 function addColumnIfMissing(database, table, name, type) {
@@ -560,6 +575,8 @@ function insertSave({
   // sync passes a descending clock so a newest-first social stream keeps
   // its order (newest social = newest in the app) instead of inverting.
   createdAt,
+  // Optional JSON metadata. Inbox imports stash { inbox: { item_id, ... } }.
+  meta,
 } = {}) {
   const db = getDatabase();
   const paletteArr = Array.isArray(palette) && palette.length ? palette : null;
@@ -588,12 +605,13 @@ function insertSave({
     tweet_meta: tweetMeta ? JSON.stringify(tweetMeta) : null,
     source: source || 'x',
     created_at: Number.isFinite(createdAt) ? createdAt : Date.now(),
+    meta: meta == null ? null : (typeof meta === 'string' ? meta : JSON.stringify(meta)),
   };
   db.prepare(`
     INSERT INTO saves
-      (id, file_path, thumb_path, title, notes, source_url, width, height, file_size, palette, palette_lab, content_hash, kind, tweet_meta, source, created_at)
+      (id, file_path, thumb_path, title, notes, source_url, width, height, file_size, palette, palette_lab, content_hash, kind, tweet_meta, source, created_at, meta)
     VALUES
-      (@id, @file_path, @thumb_path, @title, @notes, @source_url, @width, @height, @file_size, @palette, @palette_lab, @content_hash, @kind, @tweet_meta, @source, @created_at)
+      (@id, @file_path, @thumb_path, @title, @notes, @source_url, @width, @height, @file_size, @palette, @palette_lab, @content_hash, @kind, @tweet_meta, @source, @created_at, @meta)
   `).run(record);
   return record;
 }
@@ -2062,6 +2080,35 @@ function deleteBoardItem({ boardId, itemId } = {}) {
   return { ok: true };
 }
 
+function getInboxReceipt(itemId) {
+  if (!itemId) return undefined;
+  return getDatabase().prepare('SELECT * FROM inbox_receipts WHERE item_id = ?').get(itemId);
+}
+
+function saveInboxReceipt({ itemId, saveId, result, attempts, lastError, receivedAt, ackedAt } = {}) {
+  if (!itemId) return { ok: false };
+  getDatabase().prepare(`
+    INSERT INTO inbox_receipts (item_id, save_id, result, attempts, last_error, received_at, acked_at)
+    VALUES (@item_id, @save_id, @result, @attempts, @last_error, @received_at, @acked_at)
+    ON CONFLICT(item_id) DO UPDATE SET
+      save_id = excluded.save_id,
+      result = excluded.result,
+      attempts = excluded.attempts,
+      last_error = excluded.last_error,
+      received_at = excluded.received_at,
+      acked_at = excluded.acked_at
+  `).run({
+    item_id: itemId,
+    save_id: saveId || null,
+    result: result || null,
+    attempts: Number.isFinite(attempts) ? attempts : 0,
+    last_error: lastError || null,
+    received_at: receivedAt || null,
+    acked_at: ackedAt || null,
+  });
+  return { ok: true };
+}
+
 function deleteBoardItems({ boardId, itemIds } = {}) {
   if (!Array.isArray(itemIds) || itemIds.length === 0) return { ok: true };
   const placeholders = itemIds.map(() => '?').join(',');
@@ -2149,4 +2196,6 @@ module.exports = {
   bulkUpdateBoardItems,
   deleteBoardItem,
   deleteBoardItems,
+  getInboxReceipt,
+  saveInboxReceipt,
 };

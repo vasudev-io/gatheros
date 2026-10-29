@@ -19,10 +19,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { app, safeStorage } = require('electron');
 
-const {
-  API_BASE_URL,
-  OFFLINE_GRACE_MS,
-} = require('../shared/licensing-config');
+const { OFFLINE_GRACE_MS } = require('../shared/licensing-config');
+const { readConfiguredApiBaseUrl } = require('../shared/api-base');
 
 const SESSION_FILE = 'license-session.bin';
 const CACHE_FILE = 'license-cache.json';
@@ -118,7 +116,7 @@ function clearCache() {
 async function requestMagicLink(email) {
   if (!email) return { ok: false, error: 'missing_email' };
   try {
-    const res = await fetch(`${API_BASE_URL}/auth/magic-link`, {
+    const res = await fetch(`${readConfiguredApiBaseUrl()}/auth/magic-link`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
@@ -135,7 +133,7 @@ async function requestMagicLink(email) {
 async function exchangeMagicToken(token) {
   if (!token) return { ok: false, error: 'missing_token' };
   try {
-    const res = await fetch(`${API_BASE_URL}/auth/exchange`, {
+    const res = await fetch(`${readConfiguredApiBaseUrl()}/auth/exchange`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -182,7 +180,7 @@ async function verifyLicense({ force = false } = {}) {
   }
 
   try {
-    const res = await fetch(`${API_BASE_URL}/license/verify`, {
+    const res = await fetch(`${readConfiguredApiBaseUrl()}/license/verify`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${sessionToken}` },
     });
@@ -257,7 +255,7 @@ async function customerPortal() {
   const sessionToken = getSessionToken();
   if (!sessionToken) return { ok: false, error: 'unauth' };
   try {
-    const res = await fetch(`${API_BASE_URL}/license/customer-portal`, {
+    const res = await fetch(`${readConfiguredApiBaseUrl()}/license/customer-portal`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${sessionToken}` },
     });
@@ -283,7 +281,7 @@ async function createCheckout(plan) {
     return { ok: false, error: 'invalid_plan' };
   }
   try {
-    const res = await fetch(`${API_BASE_URL}/license/checkout`, {
+    const res = await fetch(`${readConfiguredApiBaseUrl()}/license/checkout`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${sessionToken}`,
@@ -306,7 +304,7 @@ async function signOut() {
   const sessionToken = getSessionToken();
   if (sessionToken) {
     try {
-      await fetch(`${API_BASE_URL}/auth/signout`, {
+      await fetch(`${readConfiguredApiBaseUrl()}/auth/signout`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${sessionToken}` },
       });
@@ -342,5 +340,6 @@ module.exports = {
   createCheckout,
   // Inspection (used by IPC + tests)
   getSessionToken,
+  setSessionToken,
   hasSession: () => !!getSessionToken(),
 };

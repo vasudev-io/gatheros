@@ -8,7 +8,7 @@
 // before returning the OpenAI-shaped body the rest of the app expects.
 
 const fs = require('node:fs');
-const { API_BASE_URL } = require('../shared/licensing-config');
+const { readConfiguredApiBaseUrl } = require('../shared/api-base');
 const { getSessionToken } = require('./licensing');
 
 // Public so callers can short-circuit feature toggles without making
@@ -35,7 +35,7 @@ async function postProxy(path, body, { timeoutMs = PROXY_TIMEOUT_MS } = {}) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res;
   try {
-    res = await fetch(`${API_BASE_URL}${path}`, {
+    res = await fetch(`${readConfiguredApiBaseUrl()}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -243,7 +243,7 @@ async function getUsage() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
-    const res = await fetch(`${API_BASE_URL}/ai/usage`, {
+    const res = await fetch(`${readConfiguredApiBaseUrl()}/ai/usage`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: controller.signal,
     });

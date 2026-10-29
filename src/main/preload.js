@@ -294,6 +294,13 @@ contextBridge.exposeInMainWorld('moodmark', {
     install: () => ipcRenderer.invoke('updater:install'),
     check: () => ipcRenderer.invoke('updater:check'),
   },
+  inbox: {
+    status: () => ipcRenderer.invoke('inbox:status'),
+    pull: () => ipcRenderer.invoke('inbox:pull'),
+    listTokens: () => ipcRenderer.invoke('inbox:tokens:list'),
+    createToken: (label) => ipcRenderer.invoke('inbox:tokens:create', { label }),
+    revokeToken: (id) => ipcRenderer.invoke('inbox:tokens:revoke', id),
+  },
   licensing: {
     requestMagicLink: (email) => ipcRenderer.invoke('licensing:request-magic-link', email),
     verify: (opts) => ipcRenderer.invoke('licensing:verify', opts),
