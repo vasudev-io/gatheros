@@ -20,7 +20,7 @@
     "build:mac:x64": "vite build && electron-builder --mac --x64",
     "prerelease": "node scripts/check-release-version.js",
     "smoke-test": "node scripts/smoke-test.js",
-    "test": "node --test src/shared/api-base.test.js src/main/inbox-import.test.js src/main/inbox-sync.test.js src/main/storage-guard.test.js",
+    "test": "node --test src/shared/api-base.test.js src/main/inbox-import.test.js src/main/inbox-organize.test.js src/main/inbox-sync.test.js src/main/storage-guard.test.js",
     "pack:extension": "node scripts/pack-extension.js",
     "pack:starter": "ELECTRON_RUN_AS_NODE=1 electron scripts/build-starter-pack.js",
     "release": "rm -rf dist/build && mkdir -p dist && touch dist/.metadata_never_index && vite build && electron-builder --publish never && node scripts/smoke-test.js && electron-builder --publish always",

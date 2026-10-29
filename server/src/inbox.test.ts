@@ -494,3 +494,265 @@ test('maintenance purges old pending items and delivered bytes', async () => {
   assert.ok(deliveredRow?.deleted_at);
   assert.equal(deliveredRow?.r2_key, null);
 });
+
+// ── Ratings, list_rated_items, file_items, collection_name ─────────────
+
+async function callTool(token: string, name: string, args: Record<string, unknown>, bindings: Env = env) {
+  const res = await api('/mcp', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+  }, bindings);
+  assert.equal(res.status, 200);
+  const body = await res.json() as { result: { isError: boolean; content: { text: string }[] } };
+  return { isError: body.result.isError, data: JSON.parse(body.result.content[0]!.text) as Record<string, any> };
+}
+
+async function deliver(session: string, itemId: string, result: 'imported' | 'duplicate' | 'failed' = 'imported') {
+  const saveId = crypto.randomUUID();
+  const ack = await api(`/v1/inbox/items/${itemId}/ack`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${session}` },
+    body: JSON.stringify({ result, save_id: result === 'failed' ? undefined : saveId }),
+  });
+  assert.equal(ack.status, 200);
+  return saveId;
+}
+
+async function rate(session: string, ratings: unknown[]) {
+  const res = await api('/v1/inbox/ratings', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${session}` },
+    body: JSON.stringify({ ratings }),
+  });
+  return { status: res.status, body: await res.json() as Record<string, any> };
+}
+
+async function addPage(token: string, extra: Record<string, unknown> = {}) {
+  const id = crypto.randomUUID();
+  const res = await callTool(token, 'add_item', { id, source_url: `https://example.com/${id}`, title: `Pick ${id.slice(0, 4)}`, tags: ['ui'], note: 'nice', ...extra });
+  assert.equal(res.isError, false, JSON.stringify(res.data));
+  return id;
+}
+
+test('ratings: session only, inbox items only, last write wins, clear drops the rating', async () => {
+  const user = await createUser(`rate-${crypto.randomUUID()}@example.com`);
+  const other = await createUser(`rate-other-${crypto.randomUUID()}@example.com`);
+  const issued = await issueToken(user.session);
+  const liked = await addPage(issued.token);
+  const disliked = await addPage(issued.token);
+  const dup = await addPage(issued.token);
+  const pending = await addPage(issued.token);
+  await deliver(user.session, liked);
+  await deliver(user.session, disliked);
+  await deliver(user.session, dup, 'duplicate');
+
+  // An inbox token cannot write ratings; that stays on the session.
+  const viaToken = await api('/v1/inbox/ratings', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${issued.token}` },
+    body: JSON.stringify({ ratings: [{ item_id: liked, rating: 'like' }] }),
+  });
+  assert.equal(viaToken.status, 403);
+
+  const t0 = Date.now() - 10_000;
+  const first = await rate(user.session, [
+    { item_id: liked, rating: 'like', rated_at: t0 },
+    { item_id: disliked, rating: 'dislike', rated_at: t0 },
+    { item_id: dup, rating: 'like', rated_at: t0 },
+    { item_id: pending, rating: 'like', rated_at: t0 },
+  ]);
+  assert.equal(first.status, 200);
+  assert.deepEqual([...first.body.accepted].sort(), [liked, disliked].sort());
+  assert.deepEqual(first.body.rejected.map((r: { item_id: string }) => r.item_id).sort(), [dup, pending].sort());
+
+  // Another account cannot rate these items.
+  const cross = await rate(other.session, [{ item_id: liked, rating: 'dislike' }]);
+  assert.deepEqual(cross.body.accepted, []);
+
+  const bad = await rate(user.session, [{ item_id: liked, rating: 'love' }]);
+  assert.equal(bad.status, 400);
+
+  // An older write loses.
+  await rate(user.session, [{ item_id: liked, rating: 'dislike', rated_at: t0 - 5000 }]);
+  let listed = await callTool(issued.token, 'list_rated_items', {});
+  const likedRow = listed.data.items.find((i: { item_id: string }) => i.item_id === liked);
+  assert.equal(likedRow.rating, 'like');
+  assert.deepEqual(Object.keys(likedRow).sort(), ['filing_status', 'item_id', 'note', 'rated_at', 'rating', 'source_url', 'tags', 'title']);
+  assert.deepEqual(likedRow.tags, ['ui']);
+
+  const likes = await callTool(issued.token, 'list_rated_items', { rating: 'like' });
+  assert.deepEqual(likes.data.items.map((i: { item_id: string }) => i.item_id), [liked]);
+  const since = await callTool(issued.token, 'list_rated_items', { since: new Date(t0 + 1).toISOString() });
+  assert.deepEqual(since.data.items, []);
+  const badSince = await callTool(issued.token, 'list_rated_items', { since: 'yesterday-ish' });
+  assert.equal(badSince.isError, true);
+  const one = await callTool(issued.token, 'list_rated_items', { limit: 1 });
+  assert.equal(one.data.items.length, 1);
+
+  // Clearing removes it from the list.
+  await rate(user.session, [{ item_id: disliked, rating: null }]);
+  listed = await callTool(issued.token, 'list_rated_items', {});
+  assert.deepEqual(listed.data.items.map((i: { item_id: string }) => i.item_id), [liked]);
+
+  // Another account's token sees none of it.
+  const otherToken = (await issueToken(other.session)).token;
+  const otherList = await callTool(otherToken, 'list_rated_items', {});
+  assert.deepEqual(otherList.data.items, []);
+});
+
+test('file_items queues filings for delivered items and retargets pending ones', async () => {
+  const user = await createUser(`file-${crypto.randomUUID()}@example.com`);
+  const other = await createUser(`file-other-${crypto.randomUUID()}@example.com`);
+  const token = (await issueToken(user.session)).token;
+  const otherToken = (await issueToken(other.session)).token;
+  const colId = crypto.randomUUID();
+  await api('/v1/inbox/collections', {
+    method: 'PUT',
+    headers: { authorization: `Bearer ${user.session}` },
+    body: JSON.stringify({ collections: [{ id: colId, name: 'Onboarding', kind: 'collection' }] }),
+  });
+
+  const a = await addPage(token);
+  const b = await addPage(token);
+  const dup = await addPage(token);
+  const failed = await addPage(token);
+  const pending = await addPage(token);
+  await deliver(user.session, a);
+  await deliver(user.session, b);
+  await deliver(user.session, dup, 'duplicate');
+  await deliver(user.session, failed, 'failed');
+
+  const res = await callTool(token, 'file_items', {
+    items: [
+      { item_id: a, collection_name: 'onboarding' },
+      { item_id: b, collection_name: 'Empty states' },
+      { item_id: dup, collection_name: 'Onboarding' },
+      { item_id: failed, collection_id: colId },
+      { item_id: pending, collection_name: 'Empty  States' },
+      { item_id: 'nope' },
+      { item_id: crypto.randomUUID(), collection_id: colId },
+      { item_id: a },
+    ],
+  });
+  assert.equal(res.isError, false);
+  const results = res.data.results as Record<string, any>[];
+  assert.equal(results[0]!.status, 'queued');
+  assert.equal(results[0]!.collection_id, colId);
+  assert.equal(results[0]!.will_create, false);
+  assert.equal(results[1]!.status, 'queued');
+  assert.equal(results[1]!.collection_name, 'Empty states');
+  assert.equal(results[1]!.will_create, true);
+  assert.equal(results[2]!.error, 'not_inbox_save');
+  assert.equal(results[3]!.error, 'not_delivered');
+  assert.equal(results[4]!.status, 'retargeted');
+  assert.equal(results[5]!.error, 'invalid_item_id');
+  assert.equal(results[6]!.error, 'not_found');
+  assert.equal(results[7]!.error, 'missing_collection');
+
+  // The other account cannot file these items.
+  const cross = await callTool(otherToken, 'file_items', { items: [{ item_id: a, collection_name: 'Mine' }] });
+  assert.equal(cross.data.results[0].error, 'not_found');
+
+  // Too many, or none.
+  const many = await callTool(token, 'file_items', { items: Array.from({ length: 51 }, () => ({ item_id: a, collection_id: colId })) });
+  assert.equal(many.isError, true);
+  assert.equal(many.data.error, 'too_many_items');
+  const none = await callTool(token, 'file_items', { items: [] });
+  assert.equal(none.isError, true);
+
+  // Re-filing supersedes the older pending filing.
+  await callTool(token, 'file_items', { items: [{ item_id: a, collection_id: colId }] });
+
+  // A token cannot read the filing queue; the session can.
+  const viaToken = await api('/v1/inbox/filings', { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(viaToken.status, 403);
+  const filings = await api('/v1/inbox/filings', { headers: { authorization: `Bearer ${user.session}` } });
+  const fBody = await filings.json() as { filings: { id: string; item_id: string; collection_id: string | null; collection_name: string | null }[] };
+  assert.equal(fBody.filings.length, 2);
+  assert.equal(fBody.filings.filter((f) => f.item_id === a).length, 1);
+  const fb = fBody.filings.find((f) => f.item_id === b)!;
+  assert.equal(fb.collection_name, 'Empty states');
+  const otherFilings = await api('/v1/inbox/filings', { headers: { authorization: `Bearer ${other.session}` } });
+  assert.deepEqual(((await otherFilings.json()) as { filings: unknown[] }).filings, []);
+
+  // The pending item now carries the new target for its import.
+  const queue = await api('/v1/inbox/items?status=pending', { headers: { authorization: `Bearer ${user.session}` } });
+  const qBody = await queue.json() as { items: { id: string; collection_name: string | null }[] };
+  assert.equal(qBody.items.find((i) => i.id === pending)?.collection_name, 'Empty States');
+
+  // Ack is session-only and only moves pending filings.
+  const tokenAck = await api('/v1/inbox/filings/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ results: [] }),
+  });
+  assert.equal(tokenAck.status, 403);
+  const ack = await api('/v1/inbox/filings/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${user.session}` },
+    body: JSON.stringify({ results: fBody.filings.map((f) => ({ id: f.id, result: 'applied' })) }),
+  });
+  assert.equal(ack.status, 200);
+  const after = await api('/v1/inbox/filings', { headers: { authorization: `Bearer ${user.session}` } });
+  assert.deepEqual(((await after.json()) as { filings: unknown[] }).filings, []);
+
+  await rate(user.session, [{ item_id: a, rating: 'like' }]);
+  const listed = await callTool(token, 'list_rated_items', {});
+  assert.equal(listed.data.items[0].filing_status, 'applied');
+});
+
+test('add_item collection_name: id wins, names match case-insensitively, new names are capped', async () => {
+  const user = await createUser(`name-${crypto.randomUUID()}@example.com`);
+  const token = (await issueToken(user.session)).token;
+  const colId = crypto.randomUUID();
+  const boardId = crypto.randomUUID();
+  await api('/v1/inbox/collections', {
+    method: 'PUT',
+    headers: { authorization: `Bearer ${user.session}` },
+    body: JSON.stringify({ collections: [
+      { id: boardId, name: 'Pricing', kind: 'board' },
+      { id: colId, name: 'Pricing', kind: 'collection' },
+    ] }),
+  });
+  const capped = withVars(env, { INBOX_DAILY_NEW_COLLECTION_LIMIT: '2' });
+
+  const both = await addPage(token, { collection_id: boardId, collection_kind: 'board', collection_name: 'Ignored' });
+  const matched = await addPage(token, { collection_name: '  pricing ' });
+  const fresh1 = await callTool(token, 'add_item', { source_url: 'https://example.com/n1', collection_name: 'Charts' }, capped);
+  const fresh1Again = await callTool(token, 'add_item', { source_url: 'https://example.com/n1b', collection_name: 'charts' }, capped);
+  const fresh2 = await callTool(token, 'add_item', { source_url: 'https://example.com/n2', collection_name: 'Maps' }, capped);
+  const over = await callTool(token, 'add_item', { source_url: 'https://example.com/n3', collection_name: 'Tables' }, capped);
+  const tooLong = await callTool(token, 'add_item', { source_url: 'https://example.com/n4', collection_name: 'x'.repeat(81) });
+  assert.equal(fresh1.isError, false, JSON.stringify(fresh1.data));
+  assert.equal(fresh1Again.isError, false);
+  assert.equal(fresh2.isError, false);
+  assert.equal(over.isError, true);
+  assert.equal(over.data.error, 'collection_create_limit');
+  assert.equal(tooLong.isError, true);
+  assert.equal(tooLong.data.error, 'too_long');
+
+  const queue = await api('/v1/inbox/items?status=pending', { headers: { authorization: `Bearer ${user.session}` } });
+  const items = ((await queue.json()) as { items: { id: string; collection_id: string | null; collection_kind: string | null; collection_name: string | null }[] }).items;
+  const byId = (id: string) => items.find((i) => i.id === id)!;
+  assert.equal(byId(both).collection_id, boardId);
+  assert.equal(byId(both).collection_name, null);
+  assert.equal(byId(matched).collection_id, colId);
+  assert.equal(byId(matched).collection_kind, 'collection');
+  const charts = items.filter((i) => i.collection_name && i.collection_name.toLowerCase() === 'charts');
+  assert.equal(charts.length, 2);
+  assert.ok(charts.every((i) => i.collection_id === null));
+
+  // tools/list advertises the new tools.
+  const listed = await api('/mcp', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  });
+  const names = ((await listed.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name);
+  assert.deepEqual(names, ['add_item', 'list_collections', 'list_recent_inbox_items', 'list_rated_items', 'file_items']);
+});

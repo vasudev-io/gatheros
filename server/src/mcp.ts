@@ -8,6 +8,8 @@
 //   add_item                  queue an image (url or base64) or a page URL
 //   list_collections          names the desktop has published, not saves
 //   list_recent_inbox_items   inbox metadata this account queued, not the library
+//   list_rated_items          like / dislike the user gave inbox saves
+//   file_items                ask the desktop to move inbox saves into a collection
 //
 // A session token is rejected. The token cannot call the read routes
 // that stream bytes or page the queue; those stay on the session.
@@ -15,7 +17,7 @@
 import type { Context } from 'hono';
 import type { Env } from './types';
 import { requireInboxWrite, type ApiTokenAuth } from './auth';
-import { createInboxItem, listCatalog, listRecentForToken } from './inbox';
+import { createInboxItem, fileItems, listCatalog, listRatedItems, listRecentForToken } from './inbox';
 import { InboxError, SOURCE_NAMES } from './inbox-validate';
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26'];
@@ -36,7 +38,7 @@ const TOOLS = [
   {
     name: 'add_item',
     description:
-      'Add an inspiration item to the user\'s GatherOS inbox. The desktop app imports it into their library (thumbnail, palette, and AI indexing when that is on). Provide image_base64 or image_url, or only a source_url to save the page. collection_id comes from list_collections; omit it to use their default Inbox collection.',
+      'Add an inspiration item to the user\'s GatherOS inbox. The desktop app imports it into their library (thumbnail, palette, and AI indexing when that is on). Provide image_base64 or image_url, or only a source_url to save the page. collection_id comes from list_collections. Or pass collection_name: it matches an existing collection without regard to case, or the desktop creates it (about 20 new collections a day). collection_id wins when both are set. Omit both to use their default Inbox collection.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -49,6 +51,7 @@ const TOOLS = [
         image_base64: { type: 'string', description: 'Base64 image bytes, or a data:image/...;base64 URL.' },
         collection_id: { type: 'string', description: 'Target collection or board id from list_collections.' },
         collection_kind: { type: 'string', enum: ['collection', 'board'] },
+        collection_name: { type: 'string', description: 'Collection name, up to 80 characters. Matched without regard to case, created if missing. Ignored when collection_id is set.' },
         id: { type: 'string', description: 'Optional UUID. Repeating it is idempotent.' },
       },
     },
@@ -73,7 +76,61 @@ const TOOLS = [
     },
     annotations: { readOnlyHint: true, destructiveHint: false },
   },
+  {
+    name: 'list_rated_items',
+    description:
+      'List inbox items the user rated in GatherOS (like or dislike), newest rating first. Returns item_id, title, source_url, tags, note, rating, rated_at, and filing_status. Only items this inbox delivered, never other saves, and no image bytes. Use the ratings to learn their taste and pass liked item_ids to file_items.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since: { description: 'Only ratings at or after this time: epoch milliseconds or an ISO 8601 string.', type: ['integer', 'string'] },
+        rating: { type: 'string', enum: ['like', 'dislike', 'any'], description: 'Default any.' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Default 20.' },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  },
+  {
+    name: 'file_items',
+    description:
+      'File inbox items into a collection. On its next pull the desktop app adds each save to the target and takes it out of the default Inbox collection. Give collection_id (from list_collections) or collection_name (matched without regard to case, created if missing, about 20 new collections a day). Only items this inbox delivered can be filed; it never moves other saves and never deletes anything. Items not yet on the desktop are retargeted instead. Returns one result per item.',
+    inputSchema: {
+      type: 'object',
+      required: ['items'],
+      properties: {
+        items: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            required: ['item_id'],
+            properties: {
+              item_id: { type: 'string', description: 'item_id from add_item or list_rated_items.' },
+              collection_id: { type: 'string' },
+              collection_kind: { type: 'string', enum: ['collection', 'board'] },
+              collection_name: { type: 'string', description: 'Up to 80 characters.' },
+            },
+          },
+        },
+      },
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+  },
 ];
+
+const MAX_FILE_ITEMS = 50;
+
+function parseSince(raw: unknown): number | null | 'invalid' {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.floor(raw);
+  if (typeof raw === 'string') {
+    if (/^\d+$/.test(raw.trim())) return Number(raw.trim());
+    const t = Date.parse(raw);
+    if (Number.isFinite(t)) return t;
+  }
+  return 'invalid';
+}
 
 export async function mcpHandler(c: Context<{ Bindings: Env }>): Promise<Response> {
   const method = c.req.method.toUpperCase();
@@ -184,7 +241,7 @@ async function dispatch(
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        'Call list_collections to choose a collection or board, then add_item. This token can queue inbox items and read that queue\'s metadata. It cannot read the library.',
+        'Call list_collections to choose a collection or board, then add_item (or pass collection_name). Later, list_rated_items shows what the user liked or disliked, and file_items moves liked picks into collections. This token can queue inbox items, read that queue\'s metadata and ratings, and file those items. It cannot read or change the rest of the library.',
     };
   }
   if (method.startsWith('notifications/')) return undefined;
@@ -216,6 +273,25 @@ async function callTool(
       : 20;
     const items = await listRecentForToken(env, auth.user.id, limit);
     return toolOk({ items });
+  }
+  if (name === 'list_rated_items') {
+    const a = args as { since?: unknown; rating?: unknown; limit?: unknown };
+    const since = parseSince(a.since);
+    if (since === 'invalid') return toolError('invalid_since');
+    const rating = a.rating == null || a.rating === '' ? 'any' : a.rating;
+    if (rating !== 'like' && rating !== 'dislike' && rating !== 'any') return toolError('invalid_rating');
+    const limit = typeof a.limit === 'number' && Number.isFinite(a.limit)
+      ? Math.max(1, Math.min(50, Math.floor(a.limit)))
+      : 20;
+    const items = await listRatedItems(env, auth.user.id, { since, rating, limit });
+    return toolOk({ items });
+  }
+  if (name === 'file_items') {
+    const items = (args as { items?: unknown }).items;
+    if (!Array.isArray(items) || items.length === 0) return toolError('missing_items');
+    if (items.length > MAX_FILE_ITEMS) return toolError('too_many_items', { max: MAX_FILE_ITEMS });
+    const results = await fileItems(env, auth, items);
+    return toolOk({ results });
   }
   if (name === 'add_item') {
     try {

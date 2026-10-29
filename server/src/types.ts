@@ -31,6 +31,7 @@ export type Env = {
   INBOX_DELIVERED_RETENTION_MS?: string;
   INBOX_PENDING_RETENTION_MS?: string;
   INBOX_NOTE_MAX?: string;
+  INBOX_DAILY_NEW_COLLECTION_LIMIT?: string;
   MCP_ALLOWED_ORIGINS?: string;
 
   // Secrets (set via `wrangler secret put`)

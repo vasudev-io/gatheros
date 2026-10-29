@@ -48,13 +48,15 @@ Inbox lets an assistant you trust add inspiration to your library. It is off unt
 
 **Where.** Metadata is in Cloudflare D1, scoped to your account. Image bytes are in Cloudflare R2 under a per-account key (`users/<your id>/inbox/...`). Cloudflare’s privacy policy covers that infrastructure.
 
-**Who can write.** Only someone holding an inbox token you created in Settings. The raw token is shown once and stored only as a hash. It can add items and list collection names (and recent inbox items). It cannot read your saves, download your library, use AI, or change billing. Revoke it in Settings. Revoking also deletes that token’s items that have not been imported yet.
+**Who can write.** Only someone holding an inbox token you created in Settings. The raw token is shown once and stored only as a hash. It can add items, list collection names and recent inbox items, read the ratings you gave inbox items, and ask the app to file them. It cannot read your saves, download your library, use AI, or change billing. Revoke it in Settings. Revoking also deletes that token’s items that have not been imported yet.
 
 **How it reaches your Mac.** The app pulls pending items with your sign-in session, on launch, on a timer, when the window is focused, and when you choose **Pull now**. Each image is saved through the same local path as any other save, including a thumbnail and palette, and AI indexing if that is already on. The app then tells the server the item was delivered.
 
 **Retention.** Image bytes are deleted 7 days after the app acknowledges delivery (imported, duplicate, or failed). Items still pending after 30 days are deleted, including their bytes. You can also delete a pending item by revoking the token that created it.
 
 **Dedupe.** The same original bytes are not queued twice for one account. The hash is of those original bytes, not of the smaller file the app may store locally.
+
+**Ratings and filing.** If you like or dislike an inbox save, the app sends that rating, the item's id, and when you rated it to your own GatherOS server (the one in **Settings → API server**), with your sign-in session. Nothing about saves you made yourself is sent. A token you created can read those ratings back with the item's title, note, tags, and source, so the assistant can learn what you like. It can also ask the app to move a rated inbox item into a collection, or create a collection by name. The server stores that request and whether the app applied it. The app makes the move on your Mac, never deletes a save, and only touches saves that came from the inbox. Ratings and filing requests stay until you delete your account.
 
 ## Auto-updates
 

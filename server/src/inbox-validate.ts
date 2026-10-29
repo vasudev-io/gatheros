@@ -27,6 +27,7 @@ export const DEFAULT_LIMITS = {
   deliveredRetentionMs: 7 * 24 * 60 * 60 * 1000,
   pendingRetentionMs: 30 * 24 * 60 * 60 * 1000,
   noteMax: 1000,
+  dailyNewCollectionLimit: 20,
 };
 
 export type InboxLimits = typeof DEFAULT_LIMITS;
@@ -40,6 +41,7 @@ export function limitsFromEnv(env: {
   INBOX_DELIVERED_RETENTION_MS?: string;
   INBOX_PENDING_RETENTION_MS?: string;
   INBOX_NOTE_MAX?: string;
+  INBOX_DAILY_NEW_COLLECTION_LIMIT?: string;
 }): InboxLimits {
   return {
     maxAssetBytes: positiveInt(env.INBOX_MAX_ASSET_BYTES, DEFAULT_LIMITS.maxAssetBytes),
@@ -50,6 +52,7 @@ export function limitsFromEnv(env: {
     deliveredRetentionMs: positiveInt(env.INBOX_DELIVERED_RETENTION_MS, DEFAULT_LIMITS.deliveredRetentionMs),
     pendingRetentionMs: positiveInt(env.INBOX_PENDING_RETENTION_MS, DEFAULT_LIMITS.pendingRetentionMs),
     noteMax: positiveInt(env.INBOX_NOTE_MAX, DEFAULT_LIMITS.noteMax),
+    dailyNewCollectionLimit: positiveInt(env.INBOX_DAILY_NEW_COLLECTION_LIMIT, DEFAULT_LIMITS.dailyNewCollectionLimit),
   };
 }
 
@@ -132,6 +135,30 @@ export function cleanCollectionId(input: unknown): string | null {
   const s = input.trim();
   if (!ID_RE.test(s)) throw new InboxError(400, 'invalid_collection');
   return s;
+}
+
+// A collection name an inbox token can ask for. Same line rules as a
+// title, capped at 80 characters so it fits the sidebar.
+export function cleanCollectionName(input: unknown): string | null {
+  if (input == null || input === '') return null;
+  if (typeof input !== 'string') throw new InboxError(400, 'invalid_collection_name');
+  const s = input.replace(/\u0000/g, '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  if (s.length > 80) throw new InboxError(400, 'too_long', { field: 'collection_name' });
+  return s;
+}
+
+// Case-insensitive key for matching names. Desktop uses the same rule.
+export function collectionNameKey(name: string): string {
+  return name.replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
+}
+
+export type InboxRating = 'like' | 'dislike';
+
+export function cleanRating(input: unknown): InboxRating | null {
+  if (input == null || input === '' || input === 'none') return null;
+  if (input === 'like' || input === 'dislike') return input;
+  throw new InboxError(400, 'invalid_rating');
 }
 
 export function cleanCollectionKind(input: unknown): 'collection' | 'board' | null {

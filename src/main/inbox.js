@@ -8,14 +8,19 @@ const { readConfiguredApiBaseUrl } = require('../shared/api-base');
 const { INBOX_POLL_MS } = require('../shared/licensing-config');
 const { importInboxItem } = require('./inbox-import');
 const { syncInbox } = require('./inbox-sync');
+const {
+  DEFAULT_CREATE_BUDGET, organizeInbox, pushRatings, createBudget, withRating, inboxItemIdOf,
+} = require('./inbox-organize');
 
 const FOCUS_MIN_MS = 60 * 1000;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const RATING_SYNC_DELAY_MS = 1500;
 
 let inflight = null;
 let timer = null;
 let lastFocusPull = 0;
 let started = false;
+let ratingTimer = null;
 
 function sessionToken() {
   try { return require('./licensing').getSessionToken(); }
@@ -48,7 +53,7 @@ async function authedJson(pathname, options = {}) {
   return data;
 }
 
-function libraryDeps() {
+function libraryDeps(budget = createBudget()) {
   const db = require('./db');
   const settings = require('./settings');
   const notify = require('./notify');
@@ -99,6 +104,10 @@ function libraryDeps() {
       return { id: target.id, kind: target.kind === 'board' ? 'board' : 'collection' };
     },
     createCollection: (fields) => db.createCollection(fields),
+    removeFromCollection: (fields) => db.removeSaveFromCollection(fields),
+    budget,
+    listUnsyncedRatings: () => db.listUnsyncedInboxRatings(200),
+    markRatingSynced: (fields) => db.markInboxRatingSynced(fields),
     getSave: (id) => db.getSave(id),
     updateSave: (fields) => db.updateSave(fields),
     insertSave: (fields) => db.insertSave(fields),
@@ -114,10 +123,27 @@ function libraryDeps() {
   };
 }
 
+const organizeApi = {
+  putRatings: (ratings) => authedJson('/v1/inbox/ratings', {
+    method: 'POST',
+    body: JSON.stringify({ ratings }),
+  }),
+  listFilings: () => authedJson('/v1/inbox/filings'),
+  ackFilings: (results) => authedJson('/v1/inbox/filings/ack', {
+    method: 'POST',
+    body: JSON.stringify({ results }),
+  }),
+};
+
 function placeOnBoard(db, boardId, record) {
   const rows = db.getDatabase().prepare(
-    'SELECT z_index FROM board_items WHERE board_id = ?',
+    'SELECT z_index, data FROM board_items WHERE board_id = ?',
   ).all(boardId);
+  // Filing can be replayed after a lost ack. One tile per save.
+  const already = rows.some((row) => {
+    try { return JSON.parse(row.data || '{}').saveId === record.id; } catch { return false; }
+  });
+  if (already) return;
   const z = rows.reduce((max, row) => Math.max(max, row.z_index || 0), 0) + 1;
   const n = rows.length;
   const width = record.width || 480;
@@ -168,17 +194,13 @@ async function doPull(reason) {
   if (!settings.getPref('inboxEnabled', false)) return { ok: true, skipped: 'disabled' };
   if (!sessionToken()) return { ok: true, skipped: 'signed_out' };
   ensureLibrary();
-  const deps = libraryDeps();
+  const deps = libraryDeps(createBudget());
   let blockedAnnounced = false;
   try {
     const summary = await syncInbox({
       isEnabled: () => true,
       hasSession: () => true,
-      listCatalog() {
-        const collections = deps.listCollections().map((row) => ({ id: row.id, name: row.name, kind: 'collection' }));
-        const boards = deps.listBoards().map((row) => ({ id: row.id, name: row.name, kind: 'board' }));
-        return collections.concat(boards);
-      },
+      listCatalog: () => catalogFor(deps),
       api: {
         putCollections: (collections) => authedJson('/v1/inbox/collections', {
           method: 'PUT',
@@ -200,6 +222,21 @@ async function doPull(reason) {
         return outcome;
       },
     });
+    // Ratings and filings run after imports so an item added and filed
+    // between pulls lands first, then moves.
+    try {
+      summary.organize = await organizeInbox({ ...deps, api: organizeApi });
+      if (summary.organize.created > 0 || deps.budget.left < DEFAULT_CREATE_BUDGET) {
+        await authedJson('/v1/inbox/collections', {
+          method: 'PUT',
+          body: JSON.stringify({ collections: catalogFor(deps) }),
+        }).catch(() => {});
+      }
+      if (summary.organize.filed > 0 || summary.organize.created > 0) notifyLibraryChanged();
+    } catch (err) {
+      summary.organizeError = String(err && err.message || err);
+    }
+    if (summary.imported > 0 && deps.budget.left < DEFAULT_CREATE_BUDGET) notifyLibraryChanged();
     settings.setPref('inboxLastSyncAt', Date.now());
     settings.setPref('inboxLastSyncError', summary.blocked ? 'upgrade' : null);
     if (typeof summary.pending === 'number') settings.setPref('inboxPendingCount', summary.pending);
@@ -212,12 +249,74 @@ async function doPull(reason) {
   }
 }
 
+function catalogFor(deps) {
+  const collections = deps.listCollections().map((row) => ({ id: row.id, name: row.name, kind: 'collection' }));
+  const boards = deps.listBoards().map((row) => ({ id: row.id, name: row.name, kind: 'board' }));
+  return collections.concat(boards).slice(0, 200);
+}
+
+// Tell open windows the library moved under them (filing, imports).
+function notifyLibraryChanged() {
+  broadcast('inbox:library-changed');
+}
+
+function broadcast(channel, payload) {
+  try {
+    const { BrowserWindow } = require('electron');
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload);
+    }
+  } catch { /* tests and headless runs have no windows */ }
+}
+
+// Like / dislike from the detail panel or a grid card. Only saves that
+// came from the inbox can be rated. Stored on the save's meta (so the
+// renderer can show it) and on the receipt (so the next sync sends it).
+function rateSave(saveId, rating) {
+  if (typeof saveId !== 'string' || !saveId) return { ok: false, error: 'not_found' };
+  if (rating != null && rating !== 'like' && rating !== 'dislike') return { ok: false, error: 'invalid_rating' };
+  ensureLibrary();
+  const db = require('./db');
+  const save = db.getSave(saveId);
+  const itemId = inboxItemIdOf(save);
+  if (!save || !itemId) return { ok: false, error: 'not_inbox_save' };
+  const ratedAt = Date.now();
+  const meta = withRating(save, rating, ratedAt);
+  const metaJson = JSON.stringify(meta);
+  db.updateSave({ id: save.id, meta: metaJson });
+  db.setInboxRating({ itemId, saveId: save.id, rating, ratedAt });
+  scheduleRatingSync();
+  // Other windows showing this save pick the rating up too.
+  broadcast('save:updated', { id: save.id, meta: metaJson });
+  return { ok: true, id: save.id, meta: metaJson, rating: rating || null, rated_at: ratedAt };
+}
+
+function scheduleRatingSync() {
+  if (ratingTimer) clearTimeout(ratingTimer);
+  ratingTimer = setTimeout(() => {
+    ratingTimer = null;
+    syncRatingsNow().catch(() => {});
+  }, RATING_SYNC_DELAY_MS);
+  if (ratingTimer.unref) ratingTimer.unref();
+}
+
+async function syncRatingsNow() {
+  if (!sessionToken()) return { ok: true, skipped: 'signed_out' };
+  const settings = require('./settings');
+  if (!settings.getPref('inboxEnabled', false)) return { ok: true, skipped: 'disabled' };
+  ensureLibrary();
+  const deps = libraryDeps();
+  const summary = await pushRatings({ ...deps, api: organizeApi });
+  return { ok: true, ...summary };
+}
+
 function startInbox() {
   if (started) return;
   started = true;
   const { ipcMain } = require('electron');
   ipcMain.handle('inbox:status', () => getStatus());
   ipcMain.handle('inbox:pull', () => pullInbox({ reason: 'manual' }));
+  ipcMain.handle('inbox:rate', (_e, payload) => rateSave(payload && payload.saveId, payload ? payload.rating : null));
   ipcMain.handle('inbox:tokens:list', () => listTokens());
   ipcMain.handle('inbox:tokens:create', (_e, payload) => createToken(payload || {}));
   ipcMain.handle('inbox:tokens:revoke', (_e, id) => revokeToken(id));
@@ -302,4 +401,6 @@ module.exports = {
   onWindowFocus,
   pullInbox,
   getStatus,
+  rateSave,
+  syncRatingsNow,
 };

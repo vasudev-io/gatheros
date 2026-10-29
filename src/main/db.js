@@ -452,6 +452,14 @@ const MIGRATIONS = [
       );
     `);
   },
+  // Like / dislike on inbox saves. rated_at is when the user clicked;
+  // rating_synced_at is the rated_at the server last accepted, so a
+  // pull only pushes ratings that changed since.
+  (database) => {
+    addColumnIfMissing(database, 'inbox_receipts', 'rating', 'TEXT');
+    addColumnIfMissing(database, 'inbox_receipts', 'rated_at', 'INTEGER');
+    addColumnIfMissing(database, 'inbox_receipts', 'rating_synced_at', 'INTEGER');
+  },
 ];
 
 function addColumnIfMissing(database, table, name, type) {
@@ -2109,6 +2117,44 @@ function saveInboxReceipt({ itemId, saveId, result, attempts, lastError, receive
   return { ok: true };
 }
 
+// Rating columns are written here only. saveInboxReceipt leaves them
+// alone, so a re-import or ack replay cannot wipe a rating.
+function setInboxRating({ itemId, saveId, rating, ratedAt } = {}) {
+  if (!itemId) return { ok: false };
+  const value = rating === 'like' || rating === 'dislike' ? rating : null;
+  getDatabase().prepare(`
+    INSERT INTO inbox_receipts (item_id, save_id, result, attempts, rating, rated_at)
+    VALUES (@item_id, @save_id, 'imported', 0, @rating, @rated_at)
+    ON CONFLICT(item_id) DO UPDATE SET
+      rating = excluded.rating,
+      rated_at = excluded.rated_at
+  `).run({
+    item_id: itemId,
+    save_id: saveId || null,
+    rating: value,
+    rated_at: ratedAt || Date.now(),
+  });
+  return { ok: true };
+}
+
+function listUnsyncedInboxRatings(limit = 200) {
+  return getDatabase().prepare(`
+    SELECT item_id, save_id, rating, rated_at FROM inbox_receipts
+     WHERE rated_at IS NOT NULL
+       AND (rating_synced_at IS NULL OR rating_synced_at < rated_at)
+     ORDER BY rated_at ASC
+     LIMIT ?
+  `).all(limit);
+}
+
+function markInboxRatingSynced({ itemId, ratedAt } = {}) {
+  if (!itemId || !ratedAt) return { ok: false };
+  getDatabase().prepare(
+    'UPDATE inbox_receipts SET rating_synced_at = ? WHERE item_id = ? AND (rating_synced_at IS NULL OR rating_synced_at < ?)',
+  ).run(ratedAt, itemId, ratedAt);
+  return { ok: true };
+}
+
 function deleteBoardItems({ boardId, itemIds } = {}) {
   if (!Array.isArray(itemIds) || itemIds.length === 0) return { ok: true };
   const placeholders = itemIds.map(() => '?').join(',');
@@ -2198,4 +2244,7 @@ module.exports = {
   deleteBoardItems,
   getInboxReceipt,
   saveInboxReceipt,
+  setInboxRating,
+  listUnsyncedInboxRatings,
+  markInboxRatingSynced,
 };

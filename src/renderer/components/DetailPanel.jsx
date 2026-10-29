@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import ReactDOM from 'react-dom';
 import { Info as InfoIcon, Eclipse as LayersIcon, ExternalLink } from 'lucide-react';
 import styles from './DetailPanel.module.css';
+import { InboxRatingPanel } from './InboxRating';
 import { fileUrl } from '../lib/fileUrl.js';
 import { tweetMediaItems } from '../lib/tweetMedia.js';
 import ContextMenu from './ContextMenu.jsx';
@@ -1203,6 +1204,8 @@ export default function DetailPanel({
           <div className={styles.autoTagError}>{promptError}</div>
         )}
       </div>
+
+      <InboxRatingPanel record={record} />
 
       <div className={styles.collectionsSection}>
         <div className={styles.collectionsLabel}>

@@ -3,6 +3,8 @@
 // tests supply fakes. Bytes still go through saveImageFromBuffer so
 // thumbs, palette, and content-hash dedupe stay on the existing path.
 
+const { resolveTarget, ensureCollection } = require('./inbox-organize');
+
 const MAX_ATTEMPTS = 3;
 
 const MIME_EXT = {
@@ -34,16 +36,34 @@ function tagsForItem(item) {
   return tags;
 }
 
-// Item collection_id wins, then the Settings default, then a
-// collection named Inbox (created by the caller when missing). A
-// stale id falls through rather than failing the import.
+// Item collection_id wins, then item collection_name (matched without
+// case against collections, then boards; {createName} when nothing
+// matches), then the Settings default, then a collection named Inbox
+// (created by the caller when missing). A stale id falls through
+// rather than failing the import.
 function pickTarget({ item, collections, boards, defaultTarget }) {
   const collectionRows = Array.isArray(collections) ? collections : [];
   const boardRows = Array.isArray(boards) ? boards : [];
-  const wantedId = item && item.collection_id ? item.collection_id : (defaultTarget && defaultTarget.id) || null;
-  const wantedKind = item && item.collection_id
-    ? (item.collection_kind || 'collection')
-    : (defaultTarget && defaultTarget.kind) || null;
+  if (item && item.collection_id) {
+    const hit = resolveTarget({
+      id: item.collection_id,
+      kind: item.collection_kind || 'collection',
+      name: null,
+      collections: collectionRows,
+      boards: boardRows,
+    });
+    if (hit && hit.id) return hit;
+  }
+  if (item && item.collection_name) {
+    const named = resolveTarget({ name: item.collection_name, collections: collectionRows, boards: boardRows });
+    if (named) return named;
+  }
+  return pickDefault({ collectionRows, boardRows, defaultTarget });
+}
+
+function pickDefault({ collectionRows, boardRows, defaultTarget }) {
+  const wantedId = (defaultTarget && defaultTarget.id) || null;
+  const wantedKind = (defaultTarget && defaultTarget.kind) || null;
   if (wantedId && wantedKind === 'board' && boardRows.some((row) => row.id === wantedId)) {
     return { kind: 'board', id: wantedId };
   }
@@ -123,16 +143,25 @@ async function importInboxItem(item, deps) {
   }
 }
 
+function chooseTarget(item, deps) {
+  const collections = deps.listCollections();
+  const boards = deps.listBoards();
+  const defaultTarget = deps.getDefaultTarget();
+  let choice = pickTarget({ item, collections, boards, defaultTarget });
+  if (choice.createName) {
+    // Over the per-pull budget: land in the default target instead of
+    // failing the import.
+    const made = ensureCollection(choice.createName, deps);
+    choice = made || pickDefault({ collectionRows: collections, boardRows: boards, defaultTarget });
+  }
+  if (choice.createInbox) {
+    return { kind: 'collection', id: deps.createCollection({ name: 'Inbox' }).id };
+  }
+  return { kind: choice.kind, id: choice.id };
+}
+
 async function importFresh(item, deps) {
-  const choice = pickTarget({
-    item,
-    collections: deps.listCollections(),
-    boards: deps.listBoards(),
-    defaultTarget: deps.getDefaultTarget(),
-  });
-  const target = choice.createInbox
-    ? { kind: 'collection', id: deps.createCollection({ name: 'Inbox' }).id }
-    : choice;
+  const target = chooseTarget(item, deps);
 
   let img;
   let kind = item.kind === 'url' ? 'url' : 'image';

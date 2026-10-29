@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { importInboxItem, pickTarget, tagsForItem } = require('./inbox-import');
+const { createBudget } = require('./inbox-organize');
 
 function memoryDeps(overrides = {}) {
   const receipts = new Map();
@@ -87,6 +88,53 @@ test('pickTarget prefers the item, then settings, then Inbox', () => {
     pickTarget({ item: {}, collections: [], boards: [], defaultTarget: null }),
     { createInbox: true },
   );
+});
+
+test('pickTarget uses collection_name when there is no valid collection_id', () => {
+  const collections = [{ id: 'c1', name: 'Inbox' }, { id: 'c2', name: 'Type' }];
+  const boards = [{ id: 'b1', name: 'Wall' }];
+  assert.deepEqual(
+    pickTarget({ item: { collection_id: 'b1', collection_kind: 'board', collection_name: 'Type' }, collections, boards, defaultTarget: null }),
+    { kind: 'board', id: 'b1' },
+  );
+  assert.deepEqual(
+    pickTarget({ item: { collection_name: ' TYPE ' }, collections, boards, defaultTarget: null }),
+    { kind: 'collection', id: 'c2' },
+  );
+  assert.deepEqual(
+    pickTarget({ item: { collection_name: 'wall' }, collections, boards, defaultTarget: null }),
+    { kind: 'board', id: 'b1' },
+  );
+  assert.deepEqual(
+    pickTarget({ item: { collection_name: 'Empty states' }, collections, boards, defaultTarget: null }),
+    { createName: 'Empty states' },
+  );
+});
+
+test('the same new collection_name in one pull creates one collection, then the budget falls back', async () => {
+  const rows = [{ id: 'col-inbox', name: 'Inbox' }];
+  const made = [];
+  const deps = memoryDeps({
+    listCollections: () => rows,
+    createCollection: ({ name }) => {
+      const row = { id: `col-${rows.length}`, name };
+      rows.push(row);
+      made.push(name);
+      return row;
+    },
+    budget: createBudget(1),
+  });
+  let n = 0;
+  deps.saveImageFromBuffer = async () => ({ id: `save-${++n}`, filePath: '/tmp/x.webp', thumbPath: '/tmp/x.jpg', width: 1, height: 1, fileSize: 1, palette: [], contentHash: `h${n}` });
+  await importInboxItem({ ...item, id: '33333333-3333-4333-8333-333333333331', collection_name: 'Charts' }, deps);
+  await importInboxItem({ ...item, id: '33333333-3333-4333-8333-333333333332', collection_name: 'charts' }, deps);
+  await importInboxItem({ ...item, id: '33333333-3333-4333-8333-333333333333', collection_name: 'Maps' }, deps);
+  assert.deepEqual(made, ['Charts']);
+  assert.deepEqual(deps.placed.map((p) => p.target), [
+    { kind: 'collection', id: 'col-1' },
+    { kind: 'collection', id: 'col-1' },
+    { kind: 'collection', id: 'col-inbox' },
+  ]);
 });
 
 test('an asset import writes a save, tags, collection, and ack', async () => {

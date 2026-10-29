@@ -16,7 +16,10 @@ import {
   assertPublicPageUrl,
   cleanCollectionId,
   cleanCollectionKind,
+  cleanCollectionName,
   cleanHttpUrl,
+  cleanRating,
+  collectionNameKey,
   cleanLine,
   cleanNote,
   cleanSourceName,
@@ -34,7 +37,7 @@ export const inboxRoutes = new Hono<{ Bindings: Env }>();
 
 const ITEM_COLUMNS = `i.id, i.user_id, i.token_id, i.kind, i.title, i.note, i.source_name,
   i.source_url, i.image_url, i.tags, i.content_hash, i.r2_key, i.bytes, i.mime,
-  i.collection_id, i.collection_kind, i.created_at, i.received_at, i.delivered_at,
+  i.collection_id, i.collection_kind, i.collection_name, i.created_at, i.received_at, i.delivered_at,
   i.delivered_save_id, i.status, i.error, i.deleted_at`;
 
 export interface ItemRow {
@@ -54,6 +57,7 @@ export interface ItemRow {
   mime: string | null;
   collection_id: string | null;
   collection_kind: string | null;
+  collection_name: string | null;
   created_at: number | null;
   received_at: number;
   delivered_at: number | null;
@@ -75,6 +79,7 @@ export interface CreateInboxInput {
   image_base64?: unknown;
   collection_id?: unknown;
   collection_kind?: unknown;
+  collection_name?: unknown;
   created_at?: unknown;
   content_hash?: unknown;
 }
@@ -281,6 +286,66 @@ inboxRoutes.put('/collections', async (c) => {
   return c.json({ ok: true, count: rows.length });
 });
 
+// Ratings: the desktop pushes like / dislike / cleared for its own
+// inbox items. Last write wins by rated_at so a slow device cannot
+// undo a newer rating.
+inboxRoutes.post('/ratings', async (c) => {
+  const user = await requireSession(c);
+  if (user instanceof Response) return user;
+  const body = await c.req.json<{ ratings?: unknown }>().catch(() => null);
+  if (!body || !Array.isArray(body.ratings)) return c.json({ ok: false, error: 'invalid_ratings' }, 400);
+  if (body.ratings.length > 200) return c.json({ ok: false, error: 'too_many_ratings' }, 400);
+  try {
+    const result = await writeRatings(c.env, user.id, body.ratings);
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    return inboxErrorResponse(err);
+  }
+});
+
+// Filings queued by file_items, for the desktop to apply.
+inboxRoutes.get('/filings', async (c) => {
+  const user = await requireSession(c);
+  if (user instanceof Response) return user;
+  const rows = await c.env.DB.prepare(
+    `SELECT id, item_id, collection_id, collection_kind, collection_name, created_at
+       FROM inbox_filings
+      WHERE user_id = ? AND status = 'pending'
+      ORDER BY created_at ASC, id ASC
+      LIMIT 200`,
+  )
+    .bind(user.id)
+    .all<FilingRow>();
+  return c.json({ ok: true, filings: rows.results || [] });
+});
+
+inboxRoutes.post('/filings/ack', async (c) => {
+  const user = await requireSession(c);
+  if (user instanceof Response) return user;
+  const body = await c.req.json<{ results?: unknown }>().catch(() => null);
+  if (!body || !Array.isArray(body.results)) return c.json({ ok: false, error: 'invalid_results' }, 400);
+  if (body.results.length > 200) return c.json({ ok: false, error: 'too_many_results' }, 400);
+  const now = Date.now();
+  let updated = 0;
+  for (const entry of body.results) {
+    if (!entry || typeof entry !== 'object') return c.json({ ok: false, error: 'invalid_results' }, 400);
+    const rec = entry as { id?: unknown; result?: unknown; error?: unknown };
+    if (typeof rec.id !== 'string' || !isUuid(rec.id)) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    if (rec.result !== 'applied' && rec.result !== 'skipped' && rec.result !== 'failed') {
+      return c.json({ ok: false, error: 'invalid_result' }, 400);
+    }
+    const error = typeof rec.error === 'string' ? rec.error.replace(/\u0000/g, '').slice(0, 200) : null;
+    const res = await c.env.DB.prepare(
+      `UPDATE inbox_filings SET status = ?, error = ?, applied_at = ?
+        WHERE id = ? AND user_id = ? AND status = 'pending'`,
+    )
+      .bind(rec.result, error, now, rec.id, user.id)
+      .run();
+    updated += res.meta?.changes || 0;
+  }
+  return c.json({ ok: true, updated });
+});
+
 export async function createInboxItem(
   env: Env,
   auth: ApiTokenAuth,
@@ -293,6 +358,7 @@ export async function createInboxItem(
   const tags = cleanTags(input.tags);
   const collectionId = cleanCollectionId(input.collection_id);
   let collectionKind = cleanCollectionKind(input.collection_kind);
+  const collectionName = collectionId ? null : cleanCollectionName(input.collection_name);
   const sourceUrlRaw = cleanHttpUrl(input.source_url, 'invalid_source_url');
   const imageUrlRaw = cleanHttpUrl(input.image_url, 'invalid_image_url');
   if (sourceUrlRaw) assertPublicPageUrl(sourceUrlRaw);
@@ -377,6 +443,24 @@ export async function createInboxItem(
 
   await assertQuota(env, auth, limits, bytes ? bytes.byteLength : 0);
 
+  // A named target that already exists in the catalog becomes an id so
+  // the desktop does not have to guess. An unknown name counts against
+  // the daily new-collection cap; the desktop creates it on import.
+  let targetId: string | null = collectionId;
+  let targetKind: string | null = collectionKind;
+  let targetName: string | null = null;
+  if (collectionName) {
+    const resolved = await resolveCollectionName(env, auth.user.id, collectionName);
+    if (resolved) {
+      targetId = resolved.id;
+      targetKind = resolved.kind;
+    } else {
+      await chargeNewCollection(env, auth.user.id, collectionName);
+      targetName = collectionName;
+      targetKind = 'collection';
+    }
+  }
+
   const now = Date.now();
   const createdAt = cleanCreatedAt(input.created_at, now);
   try {
@@ -384,8 +468,8 @@ export async function createInboxItem(
       `INSERT INTO inbox_items (
          id, user_id, token_id, kind, title, note, source_name, source_url, image_url,
          tags, content_hash, r2_key, bytes, mime, collection_id, collection_kind,
-         created_at, received_at, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'pending')`,
+         collection_name, created_at, received_at, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
     )
       .bind(
         id,
@@ -401,8 +485,9 @@ export async function createInboxItem(
         hash,
         bytes ? bytes.byteLength : null,
         mime,
-        collectionId,
-        collectionKind,
+        targetId,
+        targetKind,
+        targetName,
         createdAt,
         now,
       )
@@ -507,7 +592,7 @@ export async function attachInboxAsset(
 
 export async function listRecentForToken(env: Env, userId: string, limit: number): Promise<Record<string, unknown>[]> {
   const rows = await env.DB.prepare(
-    `SELECT id, title, note, status, source_name, source_url, tags, collection_id, collection_kind, received_at
+    `SELECT id, title, note, status, source_name, source_url, tags, collection_id, collection_kind, collection_name, received_at
        FROM inbox_items
       WHERE user_id = ? AND deleted_at IS NULL
       ORDER BY received_at DESC
@@ -524,6 +609,7 @@ export async function listRecentForToken(env: Env, userId: string, limit: number
       tags: string | null;
       collection_id: string | null;
       collection_kind: string | null;
+      collection_name: string | null;
       received_at: number;
     }>();
   return (rows.results || []).map((row) => ({
@@ -536,6 +622,7 @@ export async function listRecentForToken(env: Env, userId: string, limit: number
     tags: parseTags(row.tags),
     collection_id: row.collection_id,
     collection_kind: row.collection_kind,
+    collection_name: row.collection_name,
     received_at: row.received_at,
   }));
 }
@@ -633,6 +720,271 @@ export async function runInboxMaintenance(env: Env, now = Date.now()): Promise<{
     await env.DB.prepare(`UPDATE inbox_items SET r2_key = NULL WHERE id = ?`).bind(row.id).run();
   }
   return { pending: pendingN, delivered: deliveredN };
+}
+
+// ── Ratings and filing ─────────────────────────────────────────────
+
+export interface FilingRow {
+  id: string;
+  item_id: string;
+  collection_id: string | null;
+  collection_kind: string | null;
+  collection_name: string | null;
+  created_at: number;
+}
+
+// Items that can carry a rating or be filed: the user's own, and the
+// desktop said it imported them as a new inbox save. Retention may
+// have tombstoned the bytes; the metadata row is still there.
+const FILEABLE_SQL = `status = 'delivered' AND delivered_save_id IS NOT NULL`;
+
+export async function writeRatings(
+  env: Env,
+  userId: string,
+  entries: unknown[],
+): Promise<{ accepted: string[]; rejected: { item_id: string; error: string }[] }> {
+  const now = Date.now();
+  const accepted: string[] = [];
+  const rejected: { item_id: string; error: string }[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') throw new InboxError(400, 'invalid_ratings');
+    const rec = entry as { item_id?: unknown; rating?: unknown; rated_at?: unknown };
+    if (typeof rec.item_id !== 'string' || !isUuid(rec.item_id)) throw new InboxError(400, 'invalid_item_id');
+    const rating = cleanRating(rec.rating);
+    let ratedAt = typeof rec.rated_at === 'number' && Number.isFinite(rec.rated_at) && rec.rated_at > 0
+      ? Math.floor(rec.rated_at)
+      : now;
+    if (ratedAt > now) ratedAt = now;
+    const item = await env.DB.prepare(
+      `SELECT id FROM inbox_items WHERE id = ? AND user_id = ? AND ${FILEABLE_SQL}`,
+    )
+      .bind(rec.item_id, userId)
+      .first<{ id: string }>();
+    if (!item) {
+      rejected.push({ item_id: rec.item_id, error: 'not_found' });
+      continue;
+    }
+    await env.DB.prepare(
+      `INSERT INTO inbox_ratings (user_id, item_id, rating, rated_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (user_id, item_id) DO UPDATE SET
+         rating = excluded.rating,
+         rated_at = excluded.rated_at,
+         updated_at = excluded.updated_at
+       WHERE excluded.rated_at >= inbox_ratings.rated_at`,
+    )
+      .bind(userId, rec.item_id, rating, ratedAt, now)
+      .run();
+    accepted.push(rec.item_id);
+  }
+  return { accepted, rejected };
+}
+
+export interface RatedItem {
+  item_id: string;
+  title: string | null;
+  source_url: string | null;
+  tags: string[];
+  note: string | null;
+  rating: string;
+  rated_at: number;
+  filing_status: string | null;
+}
+
+export async function listRatedItems(
+  env: Env,
+  userId: string,
+  opts: { since?: number | null; rating?: 'like' | 'dislike' | 'any'; limit: number },
+): Promise<RatedItem[]> {
+  const params: unknown[] = [userId];
+  let where = `r.user_id = ? AND r.rating IS NOT NULL`;
+  if (opts.rating === 'like' || opts.rating === 'dislike') {
+    where += ` AND r.rating = ?`;
+    params.push(opts.rating);
+  }
+  if (opts.since != null) {
+    where += ` AND r.rated_at >= ?`;
+    params.push(opts.since);
+  }
+  params.push(opts.limit);
+  const rows = await env.DB.prepare(
+    `SELECT r.item_id, r.rating, r.rated_at, i.title, i.source_url, i.tags, i.note,
+            (SELECT f.status FROM inbox_filings f
+              WHERE f.user_id = r.user_id AND f.item_id = r.item_id
+              ORDER BY f.created_at DESC LIMIT 1) AS filing_status
+       FROM inbox_ratings r
+       JOIN inbox_items i ON i.id = r.item_id AND i.user_id = r.user_id
+      WHERE ${where} AND i.status = 'delivered' AND i.delivered_save_id IS NOT NULL
+      ORDER BY r.rated_at DESC, r.item_id ASC
+      LIMIT ?`,
+  )
+    .bind(...params)
+    .all<{
+      item_id: string;
+      rating: string;
+      rated_at: number;
+      title: string | null;
+      source_url: string | null;
+      tags: string | null;
+      note: string | null;
+      filing_status: string | null;
+    }>();
+  return (rows.results || []).map((row) => ({
+    item_id: row.item_id,
+    title: row.title,
+    source_url: row.source_url,
+    tags: parseTags(row.tags),
+    note: row.note,
+    rating: row.rating,
+    rated_at: row.rated_at,
+    filing_status: row.filing_status,
+  }));
+}
+
+export interface FileRequest {
+  item_id?: unknown;
+  collection_id?: unknown;
+  collection_kind?: unknown;
+  collection_name?: unknown;
+}
+
+export interface FileResult {
+  item_id: string;
+  ok: boolean;
+  status?: 'queued' | 'retargeted';
+  filing_id?: string;
+  collection_id?: string | null;
+  collection_kind?: string | null;
+  collection_name?: string | null;
+  will_create?: boolean;
+  error?: string;
+}
+
+export async function fileItems(env: Env, auth: ApiTokenAuth, requests: unknown[]): Promise<FileResult[]> {
+  const out: FileResult[] = [];
+  for (const raw of requests) {
+    const rec = (raw && typeof raw === 'object' ? raw : {}) as FileRequest;
+    const itemId = typeof rec.item_id === 'string' ? rec.item_id.trim() : '';
+    if (!isUuid(itemId)) {
+      out.push({ item_id: itemId, ok: false, error: 'invalid_item_id' });
+      continue;
+    }
+    try {
+      out.push(await fileOne(env, auth, itemId, rec));
+    } catch (err) {
+      if (err instanceof InboxError) out.push({ item_id: itemId, ok: false, error: err.code });
+      else throw err;
+    }
+  }
+  return out;
+}
+
+async function fileOne(env: Env, auth: ApiTokenAuth, itemId: string, rec: FileRequest): Promise<FileResult> {
+  const userId = auth.user.id;
+  const item = await env.DB.prepare(`SELECT ${bareColumns()} FROM inbox_items WHERE id = ? AND user_id = ?`)
+    .bind(itemId, userId)
+    .first<ItemRow>();
+  if (!item) throw new InboxError(404, 'not_found');
+  if (item.status === 'duplicate') throw new InboxError(409, 'not_inbox_save');
+  if (item.status === 'failed') throw new InboxError(409, 'not_delivered');
+  if (item.status === 'pending' && item.deleted_at) throw new InboxError(404, 'not_found');
+
+  const collectionId = cleanCollectionId(rec.collection_id);
+  let kind = cleanCollectionKind(rec.collection_kind);
+  const name = collectionId ? null : cleanCollectionName(rec.collection_name);
+  if (!collectionId && !name) throw new InboxError(400, 'missing_collection');
+
+  let targetId: string | null = null;
+  let targetName: string | null = null;
+  let willCreate = false;
+  if (collectionId) {
+    await assertKnownCollection(env, userId, collectionId, kind);
+    kind = kind || (await catalogKindFor(env, userId, collectionId)) || 'collection';
+    targetId = collectionId;
+  } else if (name) {
+    const resolved = await resolveCollectionName(env, userId, name);
+    if (resolved) {
+      targetId = resolved.id;
+      kind = resolved.kind;
+    } else {
+      await chargeNewCollection(env, userId, name);
+      targetName = name;
+      kind = 'collection';
+      willCreate = true;
+    }
+  }
+
+  if (item.status === 'pending') {
+    // Not on the desktop yet: change where the import lands instead.
+    await env.DB.prepare(
+      `UPDATE inbox_items SET collection_id = ?, collection_kind = ?, collection_name = ?
+        WHERE id = ? AND user_id = ? AND status = 'pending'`,
+    )
+      .bind(targetId, kind, targetName, itemId, userId)
+      .run();
+    return { item_id: itemId, ok: true, status: 'retargeted', collection_id: targetId, collection_kind: kind, collection_name: targetName, will_create: willCreate };
+  }
+  if (!item.delivered_save_id) throw new InboxError(409, 'not_inbox_save');
+
+  const now = Date.now();
+  await env.DB.prepare(
+    `UPDATE inbox_filings SET status = 'superseded', applied_at = ?
+      WHERE user_id = ? AND item_id = ? AND status = 'pending'`,
+  )
+    .bind(now, userId, itemId)
+    .run();
+  const filingId = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO inbox_filings (id, user_id, item_id, token_id, collection_id, collection_kind, collection_name, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+  )
+    .bind(filingId, userId, itemId, auth.tokenId, targetId, kind, targetName, now)
+    .run();
+  return { item_id: itemId, ok: true, status: 'queued', filing_id: filingId, collection_id: targetId, collection_kind: kind, collection_name: targetName, will_create: willCreate };
+}
+
+// Case-insensitive match against the catalog the desktop last pushed.
+// Collections win over boards with the same name.
+export async function resolveCollectionName(
+  env: Env,
+  userId: string,
+  name: string,
+): Promise<{ id: string; kind: 'collection' | 'board'; name: string } | null> {
+  const key = collectionNameKey(name);
+  const catalog = await listCatalog(env, userId);
+  const hits = catalog.filter((row) => collectionNameKey(row.name) === key);
+  const hit = hits.find((row) => row.kind !== 'board') || hits[0];
+  if (!hit) return null;
+  return { id: hit.id, kind: hit.kind === 'board' ? 'board' : 'collection', name: hit.name };
+}
+
+// Each distinct new name counts once per rolling day. Asking for the
+// same new name again inside that window is free.
+async function chargeNewCollection(env: Env, userId: string, name: string): Promise<void> {
+  const limits = limitsFromEnv(env);
+  const key = collectionNameKey(name);
+  const now = Date.now();
+  const since = now - 24 * 60 * 60 * 1000;
+  const existing = await env.DB.prepare(
+    `SELECT created_at FROM inbox_new_collections WHERE user_id = ? AND name_key = ?`,
+  )
+    .bind(userId, key)
+    .first<{ created_at: number }>();
+  if (existing && existing.created_at >= since) return;
+  const count = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM inbox_new_collections WHERE user_id = ? AND created_at >= ?`,
+  )
+    .bind(userId, since)
+    .first<{ n: number }>();
+  if ((count?.n || 0) >= limits.dailyNewCollectionLimit) {
+    throw new InboxError(429, 'collection_create_limit', { limit: limits.dailyNewCollectionLimit });
+  }
+  await env.DB.prepare(
+    `INSERT INTO inbox_new_collections (user_id, name_key, created_at) VALUES (?, ?, ?)
+     ON CONFLICT (user_id, name_key) DO UPDATE SET created_at = excluded.created_at`,
+  )
+    .bind(userId, key, now)
+    .run();
 }
 
 async function assertQuota(env: Env, auth: ApiTokenAuth, limits: InboxLimits, extraBytes: number): Promise<void> {
@@ -765,6 +1117,7 @@ function publicItem(row: ItemRow): Record<string, unknown> {
     bytes: row.bytes,
     collection_id: row.collection_id,
     collection_kind: row.collection_kind,
+    collection_name: row.collection_name || null,
     status: row.status,
     received_at: row.received_at,
     created_at: row.created_at,
@@ -786,7 +1139,7 @@ function parseTags(raw: string | null): string[] {
 
 function bareColumns(): string {
   return `id, user_id, token_id, kind, title, note, source_name, source_url, image_url, tags,
-    content_hash, r2_key, bytes, mime, collection_id, collection_kind, created_at, received_at,
+    content_hash, r2_key, bytes, mime, collection_id, collection_kind, collection_name, created_at, received_at,
     delivered_at, delivered_save_id, status, error, deleted_at`;
 }
 

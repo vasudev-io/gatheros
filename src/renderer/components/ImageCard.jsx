@@ -1,5 +1,6 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { InboxRatingCard } from './InboxRating';
 import styles from './ImageCard.module.css';
 import { fileUrl } from '../lib/fileUrl.js';
 import { tweetMediaItems, twimgLarge } from '../lib/tweetMedia.js';
@@ -458,7 +459,10 @@ function ImageCard({
           />
         ))}
         {record?.source === 'inbox' && !isTweet && (
-          <span className={styles.inboxBadge}>Inbox</span>
+          <span className={styles.inboxCorner}>
+            <span className={styles.inboxBadge}>Inbox</span>
+            <InboxRatingCard record={record} />
+          </span>
         )}
         {articleMeta && (
           // Title (+ short excerpt) banded over the cover, with an X glyph

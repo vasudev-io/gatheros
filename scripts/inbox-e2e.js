@@ -4,8 +4,9 @@
 // Starts the Worker, signs two accounts in through the real magic-link
 // route, adds an image with the MCP add_item tool, and imports it with
 // the desktop pull path (better-sqlite3, sharp thumbnail, Inbox
-// collection). A second account's item must not appear. Nothing here
-// deploys.
+// collection). Then rates it, reads it back with list_rated_items, files
+// it with file_items, and checks the next pull moved it out of Inbox. A
+// second account's item must not appear. Nothing here deploys.
 
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -232,6 +233,60 @@ async function main() {
     });
     if (pendingB.body.pending_count !== 1) fail('account B item was pulled by account A');
 
+    // Rate → list_rated_items → file_items → next pull moves it.
+    const inboxModule = require('../src/main/inbox');
+    const rated = inboxModule.rateSave(save.id, 'like');
+    if (!rated.ok) fail(`rateSave failed: ${JSON.stringify(rated)}`);
+    const ownSave = db.getDatabase().prepare(`SELECT id FROM saves WHERE id != ?`).get(save.id);
+    if (ownSave) fail('unexpected second save before rating');
+    const synced = await inboxModule.syncRatingsNow();
+    if (!synced.ok || synced.ratingsSynced !== 1) fail(`rating sync unexpected: ${JSON.stringify(synced)}`);
+    const ratedList = await mcp(tokenA.token, 'tools/call', { name: 'list_rated_items', arguments: { rating: 'like' } });
+    const ratedItems = JSON.parse(ratedList.result.content[0].text).items;
+    if (!Array.isArray(ratedItems) || ratedItems.length !== 1 || ratedItems[0].item_id !== payload.id) {
+      fail(`list_rated_items unexpected: ${JSON.stringify(ratedItems)}`);
+    }
+    if (ratedItems[0].title !== 'E2E ramp' || ratedItems[0].rating !== 'like' || 'image_base64' in ratedItems[0]) {
+      fail(`list_rated_items row unexpected: ${JSON.stringify(ratedItems[0])}`);
+    }
+    const otherRated = await mcp(tokenB.token, 'tools/call', { name: 'list_rated_items', arguments: {} });
+    if (JSON.parse(otherRated.result.content[0].text).items.length !== 0) fail('account B sees account A ratings');
+
+    const filed = await mcp(tokenA.token, 'tools/call', {
+      name: 'file_items',
+      arguments: { items: [{ item_id: payload.id, collection_name: 'E2E liked' }] },
+    });
+    const filedResult = JSON.parse(filed.result.content[0].text).results[0];
+    if (!filedResult.ok || filedResult.status !== 'queued' || !filedResult.will_create) {
+      fail(`file_items unexpected: ${JSON.stringify(filedResult)}`);
+    }
+    const crossFile = await mcp(tokenB.token, 'tools/call', {
+      name: 'file_items',
+      arguments: { items: [{ item_id: payload.id, collection_name: 'Stolen' }] },
+    });
+    if (JSON.parse(crossFile.result.content[0].text).results[0].error !== 'not_found') fail('account B could file account A item');
+
+    const organized = await pullInbox({ reason: 'e2e-organize' });
+    if (!organized.ok || !organized.organize || organized.organize.filed !== 1) {
+      fail(`organize pull unexpected: ${JSON.stringify(organized)}`);
+    }
+    const memberships = db.getDatabase().prepare(
+      `SELECT c.name FROM collection_items ci JOIN collections c ON c.id = ci.collection_id WHERE ci.save_id = ?`,
+    ).all(save.id).map((r) => r.name).sort();
+    if (JSON.stringify(memberships) !== JSON.stringify(['E2E liked'])) {
+      fail(`filed save memberships ${JSON.stringify(memberships)}`);
+    }
+    const likedCols = db.getAllCollections().filter((c) => c.name.toLowerCase() === 'e2e liked');
+    if (likedCols.length !== 1) fail(`expected one E2E liked collection, found ${likedCols.length}`);
+    const filingsLeft = await json('/v1/inbox/filings', { headers: { authorization: `Bearer ${sessionA}` } });
+    if (!Array.isArray(filingsLeft.body.filings) || filingsLeft.body.filings.length !== 0) {
+      fail(`filings not acked: ${JSON.stringify(filingsLeft.body)}`);
+    }
+    const afterFile = await mcp(tokenA.token, 'tools/call', { name: 'list_rated_items', arguments: {} });
+    if (JSON.parse(afterFile.result.content[0].text).items[0].filing_status !== 'applied') fail('filing_status not applied');
+    const stillOne = db.getDatabase().prepare('SELECT COUNT(*) AS n FROM saves WHERE deleted_at IS NULL').get();
+    if (stillOne.n !== 1) fail(`filing changed the save count to ${stillOne.n}`);
+
     // Same bytes again, after the first ack. Server dedupes, so force the
     // delivered row back to pending and drop the local receipt. The pull
     // must not create a second save.
@@ -254,7 +309,7 @@ async function main() {
     const after = db.getDatabase().prepare('SELECT COUNT(*) AS n FROM saves').get();
     if (after.n !== 1) fail(`dedupe created a second save (pull ${JSON.stringify(again)})`);
 
-    console.log('[inbox-e2e] ok — MCP item landed in the local library with a thumbnail, and the other account stayed isolated.');
+    console.log('[inbox-e2e] ok — MCP item landed in the local library with a thumbnail, was rated, listed, and filed out of Inbox, and the other account stayed isolated.');
   } finally {
     stop();
     await sleep(300);
