@@ -4,6 +4,21 @@
    of the surface family rather than as a separate rail. Fixed
    positioning takes it out of the flex row, which lets the
    FocusedView's top bar span the full app width below it. */
+/* Video saves: keep the translucency, drop the backdrop blur.
+   A playing <video> repaints every frame, and each repaint forces
+   Chromium to re-sample every backdrop-filter in the window — that
+   resample is what shimmered along this panel's edge. (The backdrop
+   image itself is a static poster frame, so it was never the thing
+   moving.) The blur was doing almost no work here anyway: what's behind
+   the panel is *already* blurred 60px, so translucency alone carries the
+   same ambient colour. Same look, no per-frame resample. */
+.panelNoBlur,
+.panelNoBlur .typeBadge {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.panelNoBlur { background: rgba(20, 20, 22, 0.58); }
+
 .panel {
   position: fixed;
   /* Sits below the FocusedView top bar (~47px: 10 top pad + 28
@@ -720,6 +735,12 @@
   flex: 1 1 auto;
 }
 
+/* Author doubles as a filter affordance when a handler is wired. */
+.tweetAuthorLink { cursor: pointer; border-radius: 5px; }
+.tweetAuthorLink:hover .tweetName { text-decoration: underline; text-underline-offset: 2px; }
+.tweetAuthorLink:hover .tweetHandle { color: rgba(255, 255, 255, 0.75); }
+.tweetAuthorLink:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.5); outline-offset: 2px; }
+
 .tweetName {
   font-size: var(--text-sm);
   font-weight: 600;
@@ -841,9 +862,14 @@
   margin-top: 2px;
 }
 /* X-style layouts by image count. */
+/* Two images sit side by side, but each tile is landscape (16:10) rather
+   than a tall half-column — so a landscape image keeps its orientation
+   instead of being cropped into a vertical strip. */
 .thumbsTwo {
   grid-template-columns: 1fr 1fr;
-  height: 150px;
+}
+.thumbsTwo .tweetThumb {
+  aspect-ratio: 16 / 10;
 }
 .thumbsThree {
   grid-template-columns: 1fr 1fr;

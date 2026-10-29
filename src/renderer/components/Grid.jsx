@@ -365,7 +365,9 @@ export default function Grid({
       // onboarding early-return above.
     } else if (isBookmarks && sourceFilter && sourceFilter !== 'all') {
       // Saves exist, just none from the selected source.
-      const label = sourceFilter === 'instagram' ? 'Instagram' : 'X';
+      const label = sourceFilter === 'instagram' ? 'Instagram'
+        : sourceFilter === 'cosmos' ? 'Cosmos'
+          : 'X';
       title = `No ${label} saves yet`;
       hint = `Nothing from ${label} here yet.`;
       EmptyIcon = Bookmark;

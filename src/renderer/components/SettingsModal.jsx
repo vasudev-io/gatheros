@@ -9,15 +9,10 @@ import {
   Monitor as MonitorIcon,
   Sun as SunIcon,
   Moon as MoonIcon,
-  Crop as CropIcon,
-  AppWindow as AppWindowIcon,
-  Maximize as MaximizeIcon,
   LogOut as LogOutIcon,
   CreditCard as CreditCardIcon,
   FileArchive as FileArchiveIcon,
   Eraser as EraserIcon,
-  Volume2 as SoundIcon,
-  Play as PlayIcon,
   RefreshCw as SyncIcon,
 } from 'lucide-react';
 import styles from './SettingsModal.module.css';
@@ -25,9 +20,6 @@ import { confirm } from '../lib/confirm.js';
 import { fileUrl } from '../lib/fileUrl.js';
 import AcknowledgmentsModal from './AcknowledgmentsModal.jsx';
 import PrivacyModal from './PrivacyModal.jsx';
-import {
-  SAVE_SOUNDS, DEFAULT_SAVE_SOUND, previewSaveSound, configureSaveSound,
-} from '../lib/sounds.js';
 import { requestUpgrade, useEntitlementValue } from '../context/entitlement.jsx';
 import { priceSummary, YEARLY_SAVINGS } from '../lib/pricing.js';
 
@@ -46,7 +38,6 @@ const NAV_ITEMS = [
   { id: 'tags',       label: 'Tags',       Icon: Hash },
   { id: 'capture',    label: 'Capture',    Icon: CameraIcon },
   { id: 'syncing',    label: 'Syncing',    Icon: SyncIcon },
-  { id: 'sound',      label: 'Sound',      Icon: SoundIcon },
   { id: 'updates',    label: 'Updates',    Icon: DownloadIcon },
   { id: 'storage',    label: 'Storage',    Icon: HardDriveIcon },
   { id: 'data',       label: 'Data',       Icon: Database },
@@ -74,6 +65,26 @@ function formatPeriodEnd(ts) {
   return new Date(ts).toLocaleDateString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric',
   });
+}
+
+// Turn a failed ai:reindex-library result into a one-line explanation.
+// The key case is entitlement/auth lapse — the reason the reindex used
+// to "run" and silently do nothing.
+function reindexErrorMessage(result) {
+  const reason = result?.reason || result?.code || '';
+  if (reason === 'no-session' || reason === 'unauthenticated') {
+    return "You're signed out — sign in to index your saves.";
+  }
+  if (reason === 'not-entitled' || reason === 'not_entitled') {
+    return 'Indexing needs an active subscription.';
+  }
+  if (reason === 'cap-reached' || reason === 'monthly_cap_reached') {
+    return "You've hit this month's AI limit. It resets next month.";
+  }
+  if (reason === 'many-failures' || reason === 'timeout' || reason === 'network') {
+    return 'Indexing keeps failing — check your connection and try again.';
+  }
+  return "Indexing couldn't finish. Please try again.";
 }
 
 function formatTokens(n) {
@@ -574,79 +585,6 @@ function FolderPickerRow({ value, onChange }) {
 // Updates page — auto-update toggle, manual check button, beta opt-in.
 // Talks to the existing electron-updater pipeline via new IPCs added
 // alongside this commit.
-function SoundPage({ prefs, updatePref }) {
-  const enabled = prefs.saveSoundEnabled !== false;
-  const selected = prefs.saveSound ?? DEFAULT_SAVE_SOUND;
-  const volume = typeof prefs.saveSoundVolume === 'number' ? prefs.saveSoundVolume : 0.6;
-
-  function selectSound(id) {
-    updatePref('saveSound', id);
-    configureSaveSound({ sound: id });
-    previewSaveSound(id);
-  }
-
-  return (
-    <div className={styles.page}>
-      <p className={styles.sectionHint}>
-        Play a short sound the moment an image lands in your library.
-      </p>
-
-      <div className={styles.toggleRow}>
-        <span className={styles.toggleLabel}>Play a sound when saving</span>
-        <ToggleSwitch
-          on={enabled}
-          onChange={(v) => { updatePref('saveSoundEnabled', v); configureSaveSound({ enabled: v }); }}
-        />
-      </div>
-
-      <div className={styles.toggleRow}>
-        <span className={styles.toggleLabel}>Volume</span>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={Math.round(volume * 100)}
-          disabled={!enabled}
-          className={styles.soundVolume}
-          aria-label="Save sound volume"
-          onChange={(e) => {
-            const v = Number(e.target.value) / 100;
-            updatePref('saveSoundVolume', v);
-            configureSaveSound({ volume: v });
-          }}
-        />
-      </div>
-
-      <div className={styles.soundList} data-disabled={!enabled || undefined}>
-        {SAVE_SOUNDS.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            className={`${styles.soundRow} ${selected === s.id ? styles.soundRowActive : ''}`}
-            onClick={() => selectSound(s.id)}
-            disabled={!enabled}
-          >
-            <span className={styles.soundRadio} aria-hidden="true" />
-            <span className={styles.soundText}>
-              <span className={styles.soundName}>{s.name}</span>
-              <span className={styles.soundDesc}>{s.desc}</span>
-            </span>
-            <span
-              className={styles.soundPreview}
-              role="button"
-              tabIndex={-1}
-              aria-label={`Preview ${s.name}`}
-              onClick={(e) => { e.stopPropagation(); previewSaveSound(s.id); }}
-            >
-              <PlayIcon size={13} strokeWidth={2} aria-hidden="true" />
-            </span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function UpdatesPage({ prefs, updatePref }) {
   const [state, setState] = useState({ checking: false, status: null, version: null });
 
@@ -896,7 +834,7 @@ export default function SettingsModal({
   const [usage, setUsage] = useState(null);
   const [prefs, setPrefs] = useState({ autoNameOnSave: true, theme: 'light' });
   const [unindexed, setUnindexed] = useState(0);
-  const [reindexState, setReindexState] = useState({ running: false, processed: 0, total: 0 });
+  const [reindexState, setReindexState] = useState({ running: false, processed: 0, total: 0, error: null });
   const [exportState, setExportState] = useState({ running: false, message: null });
   const [wipeState, setWipeState] = useState({ running: false, message: null });
   const [snapshots, setSnapshots] = useState([]);
@@ -928,6 +866,16 @@ export default function SettingsModal({
     ? (account?.subscription ? formatPlanLabel(account) : 'Pro')
     : onLocalTrial ? 'Free trial' : 'Free plan';
 
+  // AI features run through the metered server proxy, which only honors a
+  // real subscription — a paid plan or the Lemon Squeezy variant trial.
+  // The local no-account 14-day trial does NOT cover AI (there's no
+  // server-side trial; see wrangler.toml TRIAL_DAYS). So AI is usable only
+  // when the user is signed in (a session token exists) AND server-
+  // entitled. A signed-in local-trial user gets an upgrade prompt instead
+  // of controls that would silently 402 on every call.
+  const aiEntitled = !!(ent?.paid || ent?.serverTrialing);
+  const aiUsable = hasAi && aiEntitled;
+
   async function handleWipeLibrary() {
     if (wipeState.running) return;
     setWipeState({ running: true, message: null });
@@ -952,19 +900,19 @@ export default function SettingsModal({
     try {
       const result = await window.moodmark.library.exportZip();
       if (result?.ok) {
-        setExportState({ running: false, message: `Exported to ${result.savedPath}` });
+        setExportState({ running: false, message: `Downloaded to ${result.savedPath}` });
       } else if (result?.canceled) {
         setExportState({ running: false, message: null });
       } else {
         const reasonMsg = result?.reason === 'nothing-to-export'
-          ? 'Nothing to export yet'
+          ? 'Nothing to download yet'
           : result?.reason === 'no-active-library'
             ? 'No active library'
             : null;
-        setExportState({ running: false, message: result?.error || reasonMsg || 'Export failed' });
+        setExportState({ running: false, message: result?.error || reasonMsg || 'Download failed' });
       }
     } catch (err) {
-      setExportState({ running: false, message: err.message || 'Export failed' });
+      setExportState({ running: false, message: err.message || 'Download failed' });
     }
   }
 
@@ -992,31 +940,74 @@ export default function SettingsModal({
     // each time the user pops back in.
     setExportState({ running: false, message: null });
     setWipeState({ running: false, message: null });
+    setReindexState((s) => (s.running ? s : { running: false, processed: 0, total: 0, error: null }));
     return () => { cancelled = true; };
   }, [open]);
 
-  // Progress stream from main while ai:reindex-library runs.
+  // Progress stream from main while ai:reindex-library runs. The `done`
+  // event is terminal — it lets a Settings window that was reopened
+  // mid-run (or that didn't start the run) clear its "indexing…" state and
+  // refresh the count, rather than sitting on a stale "paused" number.
   useEffect(() => {
     if (!open) return;
-    return window.moodmark.on('ai:reindex-progress', ({ processed, total }) => {
-      setReindexState((s) => ({ ...s, processed, total }));
+    return window.moodmark.on('ai:reindex-progress', (p) => {
+      if (p?.done) {
+        const failedEverything = p.ok === false
+          || ((p.processed || 0) === 0 && (p.failed || 0) > 0);
+        setReindexState({
+          running: false,
+          processed: p.processed || 0,
+          total: p.total || 0,
+          error: failedEverything ? reindexErrorMessage(p) : null,
+        });
+        window.moodmark.ai.unindexedCount().then((c) => setUnindexed(c || 0));
+        return;
+      }
+      // A live progress tick means a run is active — adopt it so a
+      // reopened window reflects real progress even if it didn't kick it off.
+      setReindexState((s) => ({
+        ...s,
+        running: true,
+        processed: p.processed,
+        total: p.total,
+      }));
     });
   }, [open]);
 
   async function handleReindex() {
     if (reindexState.running || unindexed === 0) return;
-    setReindexState({ running: true, processed: 0, total: unindexed });
+    setReindexState({ running: true, processed: 0, total: unindexed, error: null });
     const result = await window.moodmark.ai.reindexLibrary();
+    // A run is already going (e.g. started before this modal reopened) —
+    // leave the running UI to the progress + done events rather than
+    // clobbering it with this call's early return.
+    if (result?.reason === 'already-running') return;
+    // Don't report a hollow success: if the run couldn't index anything
+    // because the session/entitlement lapsed (or every save errored),
+    // say so instead of quietly finishing at "0 of N".
+    const failedEverything = result?.ok === false
+      || ((result?.processed || 0) === 0 && (result?.failed || 0) > 0);
+    const error = failedEverything ? reindexErrorMessage(result) : null;
     setReindexState({
       running: false,
       processed: result?.processed || 0,
       total: result?.total || 0,
+      error,
     });
     const fresh = await window.moodmark.ai.unindexedCount();
     setUnindexed(fresh || 0);
   }
 
   async function togglePref(name) {
+    // The two AI toggles (autoNameOnSave / semanticSearch) drive the
+    // metered proxy, so flipping them on only means anything once the
+    // user is signed in and entitled. For a non-entitled user, send them
+    // to upgrade instead of persisting a pref that can't take effect.
+    if ((name === 'autoNameOnSave' || name === 'semanticSearch') && !aiUsable) {
+      onClose?.();
+      requestUpgrade('ai');
+      return;
+    }
     const next = !prefs[name];
     const updated = { ...prefs, [name]: next };
     setPrefs(updated);
@@ -1453,31 +1444,6 @@ export default function SettingsModal({
               </div>
 
               <div className={styles.field}>
-                <label className={styles.fieldLabel}>Default mode</label>
-                <div className={styles.segmentedRow}>
-                  {[
-                    { value: 'region',     label: 'Region',     Icon: CropIcon },
-                    { value: 'window',     label: 'Window',     Icon: AppWindowIcon },
-                    { value: 'fullscreen', label: 'Fullscreen', Icon: MaximizeIcon },
-                  ].map(({ value, label, Icon }) => {
-                    const active = prefs.captureMode === value;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        className={`${styles.segmentBtn} ${active ? styles.segmentBtnActive : ''}`}
-                        onClick={() => updatePref('captureMode', value)}
-                        aria-pressed={active}
-                      >
-                        {active && <Icon size={14} strokeWidth={1.8} aria-hidden="true" />}
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className={styles.field}>
                 <label className={styles.fieldLabel}>Drop folder</label>
                 <FolderPickerRow
                   value={prefs.captureDropFolder}
@@ -1523,10 +1489,6 @@ export default function SettingsModal({
             </div>
           )}
 
-          {activePage === 'sound' && (
-            <SoundPage prefs={prefs} updatePref={updatePref} />
-          )}
-
           {activePage === 'updates' && (
             <UpdatesPage
               prefs={prefs}
@@ -1568,7 +1530,30 @@ export default function SettingsModal({
                 </div>
               )}
 
-              {hasAi && usage && (
+              {/* Signed in but not on a paid/trialing subscription — the
+                  local trial doesn't cover the metered AI proxy, so point
+                  the user at upgrade rather than showing controls that
+                  would fail on every call. */}
+              {hasAi && !aiEntitled && (
+                <div className={styles.reindexBox}>
+                  <div className={styles.reindexCopy}>
+                    <strong>AI features are part of a subscription</strong>
+                    <span className={styles.toggleSub}>
+                      Auto-titles, visual search, and indexing run on the
+                      managed OpenAI integration. Subscribe to turn them on.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${styles.btnPrimary}`}
+                    onClick={() => { onClose?.(); requestUpgrade('ai'); }}
+                  >
+                    Upgrade
+                  </button>
+                </div>
+              )}
+
+              {aiUsable && usage && (
                 <UsageMeter usage={usage} />
               )}
 
@@ -1582,7 +1567,7 @@ export default function SettingsModal({
                   </span>
                 </span>
                 <ToggleSwitch
-                  on={hasAi && !!prefs.autoNameOnSave}
+                  on={aiUsable && !!prefs.autoNameOnSave}
                   onChange={() => togglePref('autoNameOnSave')}
                 />
               </div>
@@ -1594,12 +1579,12 @@ export default function SettingsModal({
                   </span>
                 </span>
                 <ToggleSwitch
-                  on={hasAi && !!prefs.semanticSearch}
+                  on={aiUsable && !!prefs.semanticSearch}
                   onChange={() => togglePref('semanticSearch')}
                 />
               </div>
 
-              {hasAi && (unindexed > 0 || reindexState.running) && (
+              {aiUsable && (unindexed > 0 || reindexState.running) && (
                 <div className={styles.reindexBox}>
                   <div className={styles.reindexCopy}>
                     {reindexState.running ? (
@@ -1613,7 +1598,9 @@ export default function SettingsModal({
                       <>
                         <strong>{unindexed} {unindexed === 1 ? 'save needs' : 'saves need'} indexing</strong>
                         <span className={styles.toggleSub}>
-                          Older saves won't appear in semantic results until they're processed.
+                          {reindexState.error
+                            ? reindexState.error
+                            : "Older saves won't appear in semantic results until they're processed."}
                         </span>
                       </>
                     )}
@@ -1780,7 +1767,7 @@ export default function SettingsModal({
               </div>
 
               <p className={styles.sectionHint}>
-            Export your entire library — the GatherOS database plus every
+            Download your entire library — the GatherOS database plus every
             saved image and thumbnail — into a single .zip backup. You can
             restore later by replacing the contents of the app's data
             folder with this archive's contents.
@@ -1793,7 +1780,7 @@ export default function SettingsModal({
               disabled={exportState.running}
             >
               <FileArchiveIcon size={14} strokeWidth={1.5} aria-hidden="true" />
-              {exportState.running ? 'Exporting…' : 'Export library as zip'}
+              {exportState.running ? 'Downloading…' : 'Download library as zip'}
             </button>
           </div>
           {exportState.message && (

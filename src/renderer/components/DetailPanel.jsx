@@ -8,6 +8,7 @@ import ContextMenu from './ContextMenu.jsx';
 import contextMenuStyles from './ContextMenu.module.css';
 import TagSuggestions from './TagSuggestions.jsx';
 import { fuzzyMatch } from '../lib/fuzzy.js';
+import { aiErrorMessage } from '../lib/aiError.js';
 import { findNearDuplicateTag } from '../lib/tagSimilarity.js';
 import { CollectionIcon } from './Sidebar.jsx';
 import { useEntitlementValue, isLocked, requestUpgrade } from '../context/entitlement.jsx';
@@ -156,6 +157,20 @@ function XGlyphIcon() {
   );
 }
 
+// The cosmos.so mark: six dots in a hexagonal ring, tinted via currentColor.
+function CosmosGlyphIcon() {
+  return (
+    <svg viewBox="0 0 38 42" width="15" height="15" fill="currentColor" aria-hidden="true">
+      <circle cx="19.02" cy="5.95" r="5.95" />
+      <circle cx="19.02" cy="35.99" r="5.95" />
+      <circle cx="5.97" cy="13.46" r="5.95" />
+      <circle cx="32.08" cy="13.46" r="5.95" />
+      <circle cx="5.97" cy="28.48" r="5.95" />
+      <circle cx="32.08" cy="28.48" r="5.95" />
+    </svg>
+  );
+}
+
 function InstagramGlyphIcon() {
   return (
     <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
@@ -207,6 +222,9 @@ export default function DetailPanel({
   // chosen index. 0 = the locally saved primary image.
   altImageIdx = 0,
   onAltImageIdxChange,
+  // Filter the library to this bookmark's author. Omitted = the card's
+  // author stays plain, unclickable text.
+  onFilterAuthor,
 }) {
   // X-bookmark capture stashes the tweet's author + handle + avatar +
   // caption + every image URL into tweet_meta as JSON. Parse once per
@@ -216,8 +234,17 @@ export default function DetailPanel({
     try { return JSON.parse(record.tweet_meta); }
     catch { return null; }
   }, [record?.tweet_meta]);
-  // Picks the source glyph + open label on the card (Instagram vs X).
+  // Does anything on this save play? Drives the solid-tint treatment
+  // below — a playing <video> forces a per-frame re-sample of every
+  // backdrop-filter in the window, which shimmers along this panel's edge.
+  const hasVideoMedia = useMemo(
+    () => record?.kind === 'video'
+      || tweetMediaItems(record, tweetMeta).some((m) => m.type === 'video'),
+    [record, tweetMeta],
+  );
+  // Picks the source glyph + open label on the card (X / Instagram / Cosmos).
   const igSource = record?.source === 'instagram';
+  const cosmosSource = record?.source === 'cosmos';
   // Domain shown in the tweet card footer.
   const sourceDomain = (() => {
     try { return new URL(record?.source_url).hostname.replace(/^www\./, ''); }
@@ -346,6 +373,16 @@ export default function DetailPanel({
   const [memberships, setMemberships] = useState([]);
   const [picker, setPicker] = useState(null); // { x, y }
   const addBtnRef = useRef(null);
+  // Inline "create a new collection" input, mirroring the tag add flow —
+  // so a save can be filed into a brand-new collection without leaving
+  // the panel to make it first.
+  const [addingCollection, setAddingCollection] = useState(false);
+  const [collectionDraft, setCollectionDraft] = useState('');
+  const collectionInputRef = useRef(null);
+  // Guards against Enter + the resulting blur both firing a create — a
+  // collection create is not idempotent, so a double-fire would spawn a
+  // duplicate.
+  const committingCollectionRef = useRef(false);
 
   // Spaces this save appears on (image items where data.saveId
   // matches). Loaded alongside collections / tags below.
@@ -472,7 +509,10 @@ export default function DetailPanel({
         refreshTags();
         onTagsChanged?.();
       } else {
-        setAutoTagError(result?.detail || 'Could not generate tags');
+        setAutoTagError(aiErrorMessage(result?.reason, {
+          fallback: 'Could not generate tags',
+          detail: result?.detail,
+        }));
         // Auto-clear error after a few seconds
         setTimeout(() => setAutoTagError(''), 3500);
       }
@@ -496,7 +536,10 @@ export default function DetailPanel({
     try {
       const result = await window.moodmark.ai.generatePrompt(record.id);
       if (!result?.ok) {
-        setPromptError(result?.detail || 'Could not generate prompt');
+        setPromptError(aiErrorMessage(result?.reason, {
+          fallback: 'Could not generate prompt',
+          detail: result?.detail,
+        }));
         setTimeout(() => setPromptError(''), 3500);
       }
       // Successful path: save:updated event already patches record.ai_prompt.
@@ -612,6 +655,44 @@ export default function DetailPanel({
     refreshMemberships();
   }
 
+  function startAddingCollection() {
+    setPicker(null);
+    setCollectionDraft('');
+    setAddingCollection(true);
+    requestAnimationFrame(() => collectionInputRef.current?.focus());
+  }
+
+  // Create a collection from the typed name (or reuse one that already
+  // matches, case-insensitively, so we don't spawn duplicates) and file
+  // this save into it. Empty input just cancels.
+  async function commitNewCollection() {
+    if (committingCollectionRef.current) return;
+    committingCollectionRef.current = true;
+    try {
+      const name = collectionDraft.trim();
+      if (name) {
+        const existing = allCollections.find(
+          (c) => c.name.trim().toLowerCase() === name.toLowerCase(),
+        );
+        const target = existing || await window.moodmark.collections.create({ name });
+        if (target?.id) await addToCollection(target.id);
+      }
+    } finally {
+      setCollectionDraft('');
+      setAddingCollection(false);
+      committingCollectionRef.current = false;
+    }
+  }
+
+  function handleCollectionKeyDown(e) {
+    if (e.key === 'Enter') { e.preventDefault(); commitNewCollection(); }
+    else if (e.key === 'Escape') {
+      e.preventDefault();
+      setCollectionDraft('');
+      setAddingCollection(false);
+    }
+  }
+
   const memberIds = new Set(memberships.map((c) => c.id));
   const availableToAdd = allCollections.filter((c) => !memberIds.has(c.id));
 
@@ -635,7 +716,12 @@ export default function DetailPanel({
       const base = buildAdd(c);
       tops.push(kids.length > 0 ? { ...base, children: kids.map(buildAdd) } : base);
     }
-    return tops.length > 0 ? [{ type: 'header', label: 'Add to collection' }, ...tops] : [];
+    // Always offer a way to make a new collection — the reported gap was
+    // a picker that only ever listed collections that already existed.
+    const createRow = { label: '+ Create new collection', onClick: startAddingCollection };
+    return tops.length > 0
+      ? [{ type: 'header', label: 'Add to collection' }, ...tops, createRow]
+      : [createRow];
     // addToCollection is stable enough for this panel's lifetime; rebuild
     // only when the collection set or the save's memberships change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -700,6 +786,12 @@ export default function DetailPanel({
         addingTag && suggestionsOpen && totalSuggestionRows > 0
           ? ` ${styles.panelTagRoom}`
           : ''
+      }${
+        // A playing video re-samples every backdrop-filter in the window
+        // once per frame, which shimmers along this panel's edge. Solid
+        // tint instead whenever a video could be on the stage — including
+        // a carousel whose primary is an image but which holds a clip.
+        hasVideoMedia ? ` ${styles.panelNoBlur}` : ''
       }`}
       data-onboarding="detail-panel"
     >
@@ -870,7 +962,7 @@ export default function DetailPanel({
           </div>
         </label>
 
-        {tweetMeta && (
+        {tweetMeta && !cosmosSource && (
           // Glass tweet card. Sits directly under the URL field so
           // the "where this came from" surfaces (URL + the richer
           // tweet card) cluster together. Shows author + handle +
@@ -881,7 +973,22 @@ export default function DetailPanel({
           // the source.
           <div className={styles.tweetCard}>
             <div className={styles.tweetCardHeader}>
-              <div className={styles.tweetAuthorText}>
+              <div
+                className={`${styles.tweetAuthorText}${
+                  onFilterAuthor && tweetMeta.authorHandle ? ` ${styles.tweetAuthorLink}` : ''
+                }`}
+                {...(onFilterAuthor && tweetMeta.authorHandle ? {
+                  role: 'button',
+                  tabIndex: 0,
+                  title: `Show everything saved from ${tweetMeta.authorHandle}`,
+                  onClick: () => onFilterAuthor(tweetMeta.authorHandle),
+                  onKeyDown: (e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    onFilterAuthor(tweetMeta.authorHandle);
+                  },
+                } : {})}
+              >
                 {tweetMeta.authorName && (
                   <span className={styles.tweetName}>{tweetMeta.authorName}</span>
                 )}
@@ -979,7 +1086,7 @@ export default function DetailPanel({
 
             <div className={styles.tweetFooter}>
               <span className={styles.tweetFooterSrc} aria-hidden="true">
-                {igSource ? <InstagramGlyphIcon /> : <XGlyphIcon />}
+                {cosmosSource ? <CosmosGlyphIcon /> : igSource ? <InstagramGlyphIcon /> : <XGlyphIcon />}
               </span>
               {sourceDomain && <span>{sourceDomain}</span>}
               <span className={styles.tweetFooterDot} aria-hidden="true">·</span>
@@ -991,7 +1098,7 @@ export default function DetailPanel({
                   type="button"
                   className={styles.tweetFooterOpen}
                   onClick={() => window.moodmark?.shell?.openUrl?.(record.source_url)}
-                  title={igSource ? 'Open on Instagram' : 'Open on X'}
+                  title={cosmosSource ? 'Open on Cosmos' : igSource ? 'Open on Instagram' : 'Open on X'}
                 >
                   Open
                   <ExternalLink size={12} strokeWidth={1.9} aria-hidden="true" />
@@ -1103,7 +1210,19 @@ export default function DetailPanel({
           Collections
         </div>
         <div className={styles.collectionPills}>
-          {availableToAdd.length > 0 && (
+          {addingCollection ? (
+            <span className={styles.tagInputAnchor}>
+              <input
+                ref={collectionInputRef}
+                className={styles.tagInput}
+                value={collectionDraft}
+                onChange={(e) => setCollectionDraft(e.target.value)}
+                onKeyDown={handleCollectionKeyDown}
+                onBlur={commitNewCollection}
+                placeholder="new collection"
+              />
+            </span>
+          ) : availableToAdd.length > 0 ? (
             <button
               ref={addBtnRef}
               type="button"
@@ -1111,6 +1230,16 @@ export default function DetailPanel({
               onClick={openPicker}
             >
               + Add
+            </button>
+          ) : (
+            // No existing collections left to pick from — offer creation
+            // directly so the user is never stranded with nowhere to file.
+            <button
+              type="button"
+              className={styles.addPillBtn}
+              onClick={startAddingCollection}
+            >
+              + New collection
             </button>
           )}
           {memberships.map((c) => (
@@ -1129,9 +1258,6 @@ export default function DetailPanel({
               </button>
             </span>
           ))}
-          {memberships.length === 0 && availableToAdd.length === 0 && (
-            <span className={styles.collectionsEmpty}>No collections yet</span>
-          )}
         </div>
       </div>
 

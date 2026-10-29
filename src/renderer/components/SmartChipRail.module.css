@@ -61,6 +61,33 @@
   transform: scale(0.94);
 }
 
+/* ⋯ collection-options button, sits just after the title. Borderless
+   until hover so it stays quiet next to the title text. */
+.titleMenuBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  margin-left: 2px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  flex-shrink: 0;
+  align-self: center;
+  transition: background var(--dur-instant) ease, color var(--dur-instant) ease, transform var(--dur-instant) ease;
+}
+.titleMenuBtn:hover {
+  background: var(--hover-bg-soft);
+  color: var(--text-primary);
+}
+.titleMenuBtn:active {
+  transform: scale(0.94);
+}
+
 .title {
   font-family: var(--font-ui);
   font-size: var(--text-lg);
@@ -257,6 +284,31 @@
   white-space: nowrap;
 }
 
+/* "Show all in library" — the bulk-restore button, shown in the right
+   cluster only while the Hidden view is open. */
+.showAllBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 1px 3px -1px rgba(16, 16, 19, 0.05);
+  transition: color var(--dur-instant) ease, border-color var(--dur-instant) ease;
+}
+.showAllBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
 .chipBadge {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -392,6 +444,14 @@
   cursor: pointer;
   -webkit-app-region: no-drag;
   transition: background var(--dur-instant) ease, color var(--dur-instant) ease;
+}
+
+/* Icon-only segs (X / Instagram / Cosmos) sit in a square 1:1 container;
+   only "All" keeps its text width. */
+.sourceSegIcon {
+  padding: 0;
+  min-width: 0;
+  aspect-ratio: 1 / 1;
 }
 
 .sourceSeg:hover:not(.sourceSegOn) {

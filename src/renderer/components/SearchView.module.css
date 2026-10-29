@@ -6,11 +6,27 @@
   /* nothing extra — see .grid-scroll in global.css */
 }
 
+/* One measure for the whole page — field, section rows and the
+   collections rail all share this width so everything lines up on a
+   single left edge instead of reading as three stacked blocks. */
+.scroll {
+  --search-measure: 820px;
+}
+
 .hero {
   padding: 26px 28px 18px;
-  max-width: 760px;
+  max-width: var(--search-measure);
   width: 100%;
   margin: 0 auto;
+  /* The field is ANCHORED: it holds one position per state and eases
+     between them. It used to be centred with auto margins, so its height
+     depended on the window size and how many tags/collections existed —
+     and the first keystroke teleported it to the top mid-word. */
+  transition: padding-top var(--dur-pronounced, 260ms) var(--ease-out, cubic-bezier(0.2, 0.8, 0.2, 1));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero { transition: none; }
 }
 
 /* Anchors the suggestion popover to the field's bottom edge. */
@@ -97,10 +113,32 @@
   animation: ghostIn 420ms var(--ease-out, cubic-bezier(0.2, 0.8, 0.2, 1)) both;
 }
 
-/* Term sits inline with the "Try " lead-in at the same colour, just a
-   hair of breathing room before the opening quote. */
+/* Term sits inline with the "Try " lead-in, just a hair of breathing
+   room before the opening quote. Each rotation remounts only this span
+   (the "Try " lead-in holds still), so it plays two beats: the word
+   rises into place, then a brighter band sweeps left-to-right across the
+   glyphs. The sweep is a gradient painted into the text itself via
+   background-clip, with the gradient's outer stops at the resting colour
+   so the word settles back to a normal placeholder when it finishes. */
 .ghostTerm {
   margin-left: 0.35ch;
+  background-image: linear-gradient(
+    100deg,
+    var(--text-tertiary) 0%,
+    var(--text-tertiary) 43%,
+    var(--text-primary) 50%,
+    var(--text-tertiary) 57%,
+    var(--text-tertiary) 100%
+  );
+  background-size: 300% 100%;
+  background-position: 100% 0;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation:
+    termIn 260ms var(--ease-out, cubic-bezier(0.2, 0.8, 0.2, 1)) both,
+    termSweep 820ms cubic-bezier(0.36, 0, 0.2, 1) 200ms both;
 }
 
 @keyframes ghostIn {
@@ -108,8 +146,27 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* The word arrives: lifts up into place as it fades in. */
+@keyframes termIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* The highlight travels across the glyphs. Shifting the oversized
+   gradient right moves its bright band left → right over the word. */
+@keyframes termSweep {
+  from { background-position: 100% 0; }
+  to   { background-position: 0% 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ghost { animation: none; }
+  /* Drop the gradient entirely so the term paints as plain text. */
+  .ghostTerm {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
 }
 
 .clear {
@@ -175,10 +232,11 @@
 
 .tokenKey { color: var(--text-tertiary); font-weight: 400; }
 
+/* Removing a filter is frequent and precise — 20px was a fiddly target. */
 .tokenX {
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   border: none;
   background: transparent;
   color: var(--text-tertiary);
@@ -195,13 +253,16 @@
 /* ── Filter affordance + menu ───────────────────────────────────────── */
 .filterWrap { position: relative; flex: 0 0 auto; display: inline-flex; }
 
+/* The only no-syntax route to colour / date / untagged filtering, so it
+   reads at secondary weight rather than tertiary — it used to be the
+   quietest thing in the field while guarding the most useful feature. */
 .filterBtn {
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border: none;
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   border-radius: var(--radius-md);
   cursor: pointer;
   display: inline-flex;
@@ -334,23 +395,8 @@
 .metaSoft { color: var(--text-tertiary); }
 
 /* ── Landing (empty query) ──────────────────────────────────────────── */
-.landing {
-  max-width: 760px;
-  width: 100%;
-  margin: 0 auto;
-  padding: 8px 28px 40px;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.section { display: flex; flex-direction: column; gap: 11px; }
-
-.sectionHead {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
+/* Layout lives in .landingRows / .launchSection further down — the old
+   .landing / .section / .sectionHead trio went with the launcher. */
 
 /* ── Collections row ──────────────────────────────────────────────────── */
 .collArrows {
@@ -389,19 +435,27 @@
 .collRow::-webkit-scrollbar { display: none; }
 
 .collCard {
-  /* Exactly five per view: five cards + four 12px gaps fill the row. */
-  flex: 0 0 calc((100% - 48px) / 5);
+  /* Five per view at full width, but clamped: a narrow window drops to
+     four or three legible cards instead of squeezing five toward
+     illegibility (the fan covers inside are a fixed 74px). */
+  flex: 0 0 clamp(142px, calc((100% - 48px) / 5), 190px);
   scroll-snap-align: start;
   display: flex;
   flex-direction: column;
-  padding: 0;
-  background: transparent;
-  border: none;
+  box-sizing: border-box;
+  padding: 12px;
+  /* Outlined card that matches the pills — same border, surface and
+     hover treatment as .chip below. */
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   cursor: pointer;
   font: inherit;
   color: inherit;
   text-align: left;
+  transition: background var(--dur-instant) ease, border-color var(--dur-instant) ease;
 }
+.collCard:hover { background: var(--hover-bg); border-color: var(--border-strong); }
 .collFan {
   position: relative;
   height: 94px;
@@ -421,20 +475,27 @@
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
   transition: transform var(--dur-pronounced) var(--ease-out);
 }
-/* Resting state is a CALM deck — cards aligned at 0°, each layer
-   peeking a clear ~6px above the one in front (the translateY values
-   compensate the scale inset, (1-s)·74/2, so the step stays visible).
-   The old splayed-fan resting pose (four rotations per stack × five
-   stacks) made the whole landing read scattered; the playful fan now
-   only appears on hover. */
-.collFan img:nth-child(1) { transform: translateY(-18px) scale(0.78); z-index: 1; }
-.collFan img:nth-child(2) { transform: translateY(-9px)  scale(0.86); z-index: 2; }
-.collFan img:nth-child(3) { transform: translateY(-1px)  scale(0.93); z-index: 3; }
-.collFan img:nth-child(4) { transform: translateY(8px); z-index: 4; }
+/* Resting state is a CALM deck — cards aligned at 0°, each layer peeking a
+   clear step above the one in front. It's anchored on the FRONT (top-most)
+   card, which sits dead-centre, with the cards behind it fanning upward.
+   Counting from the front (nth-last-child) is what keeps the visible stack
+   centred no matter how many covers a collection has: a 1- or 2-image stack
+   no longer floats high the way a front-counted nth-child deck did, where
+   the missing lower cards left everything top-heavy. The scale insets are
+   compensated by the translateY so each step stays visible. The playful
+   splayed fan only appears on hover. */
+.collFan img:nth-last-child(1) { transform: none;                        z-index: 4; }
+.collFan img:nth-last-child(2) { transform: translateY(-8px)  scale(0.90); z-index: 3; }
+.collFan img:nth-last-child(3) { transform: translateY(-15px) scale(0.82); z-index: 2; }
+.collFan img:nth-last-child(4) { transform: translateY(-21px) scale(0.75); z-index: 1; }
 .collCard:hover .collFan img:nth-child(1) { transform: rotate(-15deg) translate(-26px, 6px); }
 .collCard:hover .collFan img:nth-child(2) { transform: rotate(-5deg)  translate(-10px, -2px); }
 .collCard:hover .collFan img:nth-child(3) { transform: rotate(6deg)   translate(12px, -2px); }
 .collCard:hover .collFan img:nth-child(4) { transform: rotate(16deg)  translate(28px, 6px); }
+/* A one-image stack is already centred by the nth-last-child(1) rule above;
+   on hover, let the lone cover grow straight from the centre instead of
+   flying off like a fanned card. */
+.collCard:hover .collFan img:only-child { transform: scale(1.06); }
 .collFanEmpty { color: var(--icon-muted); }
 .collFanEmpty svg { width: 30px; height: 30px; }
 
@@ -463,7 +524,8 @@
 }
 
 .link {
-  margin-left: auto;
+  /* Sits right next to the section title (via the sectionHead gap) rather
+     than floating out at the far right edge. */
   border: none;
   background: transparent;
   font-family: var(--font-ui);
@@ -497,8 +559,43 @@
   transition: background var(--dur-instant) ease, color var(--dur-instant) ease, border-color var(--dur-instant) ease;
 }
 .chip:hover { background: var(--hover-bg); color: var(--text-primary); border-color: var(--border-strong); }
+/* Leading glyphs on chips are ornament, not information — the section
+   label says what the row is, so these use --text-quaternary and stay
+   light rather than following tertiary up to AA weight. */
+.chipIcon { display: inline-flex; width: 13px; height: 13px; flex: none; color: var(--text-quaternary); margin-left: -1px; }
+.chipIcon svg { width: 100%; height: 100%; display: block; }
+.chip:hover .chipIcon { color: var(--text-secondary); }
 
-.chipHash { display: inline-flex; color: var(--text-tertiary); }
+.chipHash { display: inline-flex; color: var(--text-quaternary); }
+/* Compact, non-removable filter marks inside a recent-search pill —
+   the field's token chip at reading size, so a saved query reads as
+   filters rather than as syntax. */
+.miniTok {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-bg-faint);
+  color: var(--text-primary);
+  font-weight: 500;
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.miniTok + .miniTok { margin-left: 4px; }
+.miniIcon { display: inline-flex; color: var(--text-quaternary); flex: none; }
+.miniIcon svg { width: 11px; height: 11px; display: block; }
+.miniSwatch {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: var(--radius-circle);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14);
+}
+/* Free text sitting alongside the marks in a mixed query. */
+.miniText { margin-left: 5px; }
 .chipHash svg { width: 13px; height: 13px; display: block; }
 
 .chipCount {
@@ -513,21 +610,98 @@
   color: var(--text-tertiary);
 }
 
-/* ⌘K keycap in the hero field — clickable, opens the command palette.
-   Same chip recipe as the palette's own kbd hints. */
-.kbdBtn {
-  flex: 0 0 auto;
-  padding: 3px 7px;
-  background: var(--hover-bg-soft);
-  border: 0.5px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
+/* (The ⌘K keycap that used to sit in the field is gone — offering to open
+   the command palette from inside search stacked a second search surface
+   on the first. The palette lives in the top bar.) */
+
+/* ── Launcher (empty query) ─────────────────────────────────────────
+   The field sits high in the upper third with the library count beneath
+   it, then the labelled sections below. The field never drifts: this is
+   a fixed offset, not vertical centring, so its position is identical
+   whatever the window height and however many tags or collections exist.
+   Typing eases it up to the results offset instead of teleporting. */
+.launchMode .hero {
+  padding-top: 22vh;
+}
+/* Only the count centres under the full-width field — a small deliberate
+   accent. Everything else shares the measure's left edge. */
+.launchMode .meta {
+  text-align: center;
+}
+
+.landingRows {
+  width: 100%;
+  max-width: var(--search-measure);
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 10px 28px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+/* A landing section: label (+ optional trailing action) over its content,
+   all flush to the shared left edge. */
+.launchSection {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.launchSectionHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 20px;
+}
+
+.launchRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Clear is destructive and irreversible, so it stays OUT of the chip flow
+   (it used to sit inline with the chips, one slip from wiping history).
+   It only materialises when the section is hovered or keyboard-focused,
+   trailing at the right edge, and every clear is undoable. */
+.launchClear {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  font-family: var(--font-ui);
   font-size: var(--text-xs);
   color: var(--text-tertiary);
   cursor: pointer;
-  transition: color var(--dur-instant) ease, background var(--dur-instant) ease;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity var(--dur-instant) ease, color var(--dur-instant) ease;
 }
-.kbdBtn:hover {
-  background: var(--hover-bg);
+.launchSection:hover .launchClear,
+.launchClear:focus-visible { opacity: 1; }
+.launchClear:hover { color: var(--text-primary); background: var(--hover-bg); }
+
+/* Undo affordance — replaces the row in place, right where the chips
+   were, so the recovery is exactly where the loss happened. */
+.undoRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+.undoBtn {
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
   color: var(--text-primary);
+  cursor: pointer;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
 }
+.undoBtn:hover { background: var(--hover-bg); border-color: var(--border-strong); }
+
+/* The rail shares the page measure; only its scroll overflow bleeds. */
+.launchRail { width: 100%; }

@@ -7,9 +7,9 @@ const {
   emptyTrash, wipeLibrary, updateSave, insertSave,
   getSaveEmbeddingsCached, getSavesByIds, getUnindexedSaves, getUnindexedCount, getSmartViewCounts,
   filterByColor, findSimilarByPalette,
-  getAllCollections, getAllCollectionsWithThumbs, getCollectionsForSave, getCollectionsContainingAll, createCollection, renameCollection, setCollectionParent,
+  getAllCollections, getAllCollectionsWithThumbs, getCollectionsForSave, getCollectionsContainingAll, createCollection, renameCollection, setCollectionCover, setCollectionParent,
   deleteCollection, reorderCollections, addSaveToCollection, removeSaveFromCollection,
-  getAllTags, getTagsForSave, addTagToSave, removeTagFromSave,
+  getAllTags, getAllAuthors, getTagsForSave, addTagToSave, removeTagFromSave,
   listBoards, listBoardsWithThumbs, getBoard, createBoard, renameBoard, deleteBoard, reorderBoards,
   getBoardItems, getBoardPreviewSaves, getBoardSaveIds, getBoardsForSave,
   upsertBoardItem, bulkUpdateBoardItems, deleteBoardItem, deleteBoardItems,
@@ -29,7 +29,7 @@ const {
   captureFullscreen,
   captureWindow,
 } = require('./capture');
-const { notifySaved, notifyDuplicate, refreshTray } = require('./notify');
+const { notifySaved, notifyDuplicate, refreshTray, openSaveInApp } = require('./notify');
 const { setToastInteractive, onToastsEmpty } = require('./toast-window');
 const settings = require('./settings');
 const { quitAndInstall } = require('./updater');
@@ -277,6 +277,14 @@ function registerIpcHandlers() {
     const { getRecentlyViewed } = require('./db');
     return getRecentlyViewed(limit);
   });
+  ipcMain.handle('saves:set-hidden', (_e, { id, hidden } = {}) => {
+    const { setSaveHidden } = require('./db');
+    return setSaveHidden(id, !!hidden);
+  });
+  ipcMain.handle('saves:show-all-hidden', () => {
+    const { showAllHidden } = require('./db');
+    return showAllHidden();
+  });
 
   // Hard delete from Trash: also removes the underlying image + thumb.
   ipcMain.handle('saves:permanent-delete', (_e, id) => {
@@ -521,6 +529,7 @@ function registerIpcHandlers() {
   ipcMain.handle('collections:containing-all', (_e, saveIds) => getCollectionsContainingAll(saveIds));
   ipcMain.handle('collections:create', (_e, payload) => createCollection(payload));
   ipcMain.handle('collections:rename', (_e, payload) => renameCollection(payload));
+  ipcMain.handle('collections:set-cover', (_e, payload) => setCollectionCover(payload));
   ipcMain.handle('collections:set-parent', (_e, payload) => setCollectionParent(payload));
   ipcMain.handle('collections:delete', (_e, id) => deleteCollection(id));
   ipcMain.handle('collections:reorder', (_e, ids) => reorderCollections(ids));
@@ -546,6 +555,8 @@ function registerIpcHandlers() {
   ipcMain.handle('boards:delete-items', (_e, payload) => deleteBoardItems(payload));
 
   ipcMain.handle('tags:get-all', () => getAllTags());
+  // Accounts you've saved from — powers the from: filter's autocomplete.
+  ipcMain.handle('authors:get-all', () => getAllAuthors());
   ipcMain.handle('tags:get-for-save', (_e, saveId) => getTagsForSave(saveId));
   ipcMain.handle('tags:add-to-save', (_e, payload) => addTagToSave(payload));
   ipcMain.handle('tags:remove-from-save', (_e, payload) => removeTagFromSave(payload));
@@ -694,8 +705,8 @@ function registerIpcHandlers() {
 
     const owner = BrowserWindow.fromWebContents(e.sender);
     const dlg = await dialog.showOpenDialog(owner ?? undefined, {
-      title: 'Export images to…',
-      buttonLabel: 'Export',
+      title: 'Download images to…',
+      buttonLabel: 'Download',
       properties: ['openDirectory', 'createDirectory'],
     });
     if (dlg.canceled || !dlg.filePaths?.[0]) return { ok: false, canceled: true };
@@ -738,8 +749,8 @@ function registerIpcHandlers() {
     const owner = BrowserWindow.fromWebContents(e.sender);
     const stamp = new Date().toISOString().slice(0, 10);
     const dlg = await dialog.showSaveDialog(owner ?? undefined, {
-      title: 'Export selection as zip',
-      buttonLabel: 'Export',
+      title: 'Download selection as zip',
+      buttonLabel: 'Download',
       defaultPath: `moodmark-export-${stamp}.zip`,
       filters: [{ name: 'Zip', extensions: ['zip'] }],
     });
@@ -818,8 +829,8 @@ function registerIpcHandlers() {
     const owner = BrowserWindow.fromWebContents(e.sender);
     const stamp = new Date().toISOString().slice(0, 10);
     const dlg = await dialog.showSaveDialog(owner ?? undefined, {
-      title: 'Export GatherOS library',
-      buttonLabel: 'Export',
+      title: 'Download GatherOS library',
+      buttonLabel: 'Download',
       defaultPath: `moodmark-backup-${stamp}.zip`,
       filters: [{ name: 'Zip', extensions: ['zip'] }],
     });
@@ -901,8 +912,8 @@ function registerIpcHandlers() {
     }
 
     const dlg = await dialog.showSaveDialog(owner, {
-      title: 'Export board as PNG',
-      buttonLabel: 'Export',
+      title: 'Download board as PNG',
+      buttonLabel: 'Download',
       defaultPath: defaultName || 'board.png',
       filters: [{ name: 'PNG Image', extensions: ['png'] }],
     });
@@ -1087,53 +1098,104 @@ function registerIpcHandlers() {
     }),
   );
 
+  // One reindex at a time. The Settings modal unmounts on close, so a
+  // close → reopen → re-click could otherwise spawn overlapping loops that
+  // double-process and scramble the progress readout. Reset in a finally so
+  // a crash can never leave indexing permanently "busy".
+  let reindexInFlight = false;
   ipcMain.handle('ai:reindex-library', async (event) => {
     if (!hasAiSession()) return { ok: false, reason: 'no-session' };
-    const targets = getUnindexedSaves();
-    const total = targets.length;
+    if (reindexInFlight) return { ok: false, reason: 'already-running' };
+    reindexInFlight = true;
+    try {
+      const targets = getUnindexedSaves();
+      const total = targets.length;
 
-    let processed = 0;
-    let failed = 0;
-    for (let i = 0; i < targets.length; i += 1) {
-      const row = targets[i];
-      event.sender.send('save:indexing-start', row.id);
-      try {
-        const { title, description, text } = await analyzeImage(row.file_path);
-        const updates = { id: row.id };
-        if (description) updates.aiDescription = description;
-        // Always set ocr_text (empty string for no text) so the
-        // unindexed sweep stops picking the row up.
-        updates.ocrText = text || '';
-        // Don't overwrite a title the user already supplied.
-        if (title && !row.title) updates.title = title;
+      // Codes that mean "no point continuing" — an entitlement/auth lapse
+      // or a hit monthly cap fails identically for every remaining save.
+      // Bailing keeps us from firing N doomed proxy calls and lets the
+      // renderer show why nothing indexed instead of a hollow "0 of N".
+      const FATAL_CODES = new Set([
+        'not_entitled', 'unauthenticated',
+        'http_401', 'http_402', 'monthly_cap_reached',
+      ]);
+      const fatalReason = {
+        not_entitled: 'not-entitled',
+        http_402: 'not-entitled',
+        unauthenticated: 'no-session',
+        http_401: 'no-session',
+        monthly_cap_reached: 'cap-reached',
+      };
+      // A run of back-to-back failures means something systemic (server
+      // down, offline, timeouts) rather than a few bad images — stop
+      // instead of grinding through every remaining save at 60s each.
+      const MAX_CONSECUTIVE_FAILURES = 8;
 
-        const tags = getTagsForSave(row.id).map((t) => t.name).join(', ');
-        const ocrSnippet = text ? text.slice(0, 300) : '';
-        const embedSource = [title, description, ocrSnippet, tags].filter(Boolean).join('. ');
-        if (embedSource) {
-          const vec = await embedText(embedSource);
-          updates.embedding = Buffer.from(new Float32Array(vec).buffer);
+      let processed = 0;
+      let failed = 0;
+      let consecutiveFailures = 0;
+      let aborted = null;
+      for (let i = 0; i < targets.length; i += 1) {
+        const row = targets[i];
+        event.sender.send('save:indexing-start', row.id);
+        try {
+          const { title, description, text } = await analyzeImage(row.file_path);
+          const updates = { id: row.id };
+          if (description) updates.aiDescription = description;
+          // Always set ocr_text (empty string for no text) so the
+          // unindexed sweep stops picking the row up.
+          updates.ocrText = text || '';
+          // Don't overwrite a title the user already supplied.
+          if (title && !row.title) updates.title = title;
+
+          const tags = getTagsForSave(row.id).map((t) => t.name).join(', ');
+          const ocrSnippet = text ? text.slice(0, 300) : '';
+          const embedSource = [title, description, ocrSnippet, tags].filter(Boolean).join('. ');
+          if (embedSource) {
+            const vec = await embedText(embedSource);
+            updates.embedding = Buffer.from(new Float32Array(vec).buffer);
+          }
+
+          if (Object.keys(updates).length > 1) {
+            updateSave(updates);
+            const updated = getSave(row.id);
+            event.sender.send('save:updated', updated);
+          }
+          processed += 1;
+          consecutiveFailures = 0;
+        } catch (err) {
+          console.error('Reindex failed for save', row.id, '-', err.message);
+          failed += 1;
+          consecutiveFailures += 1;
+          if (FATAL_CODES.has(err.code)) {
+            aborted = fatalReason[err.code] || 'error';
+          } else if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            aborted = 'many-failures';
+          }
+        } finally {
+          event.sender.send('save:indexing-end', row.id);
         }
-
-        if (Object.keys(updates).length > 1) {
-          updateSave(updates);
-          const updated = getSave(row.id);
-          event.sender.send('save:updated', updated);
-        }
-        processed += 1;
-      } catch (err) {
-        console.error('Reindex failed for save', row.id, '-', err.message);
-        failed += 1;
-      } finally {
-        event.sender.send('save:indexing-end', row.id);
+        event.sender.send('ai:reindex-progress', {
+          processed: i + 1,
+          total,
+          failed,
+        });
+        if (aborted) break;
       }
-      event.sender.send('ai:reindex-progress', {
-        processed: i + 1,
-        total,
-        failed,
-      });
+      const result = aborted
+        ? { ok: false, reason: aborted, processed, failed, total }
+        : { ok: true, processed, failed, total };
+      // Broadcast a terminal event so any Settings window — including one
+      // reopened after being closed mid-run — can clear its "indexing…"
+      // state instead of sitting on a stale count. Guarded: the window may
+      // be gone by the time we finish.
+      try {
+        event.sender.send('ai:reindex-progress', { ...result, done: true });
+      } catch { /* window closed */ }
+      return result;
+    } finally {
+      reindexInFlight = false;
     }
-    return { ok: true, processed, failed, total };
   });
 
   // Generate an image-generation prompt (Midjourney / DALL-E / SD)
@@ -1224,6 +1286,13 @@ function registerIpcHandlers() {
 
   ipcMain.on('toast:empty', () => {
     onToastsEmpty();
+  });
+
+  // Clicking the save toast opens the asset inside Gather (focused view)
+  // rather than handing the file off to the OS Preview app.
+  ipcMain.handle('toast:open-save', (_e, saveId) => {
+    openSaveInApp(saveId);
+    return { ok: true };
   });
 
   // Undo from the save toast — soft-delete the records that were just

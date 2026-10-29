@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Record-crate collection browser</title>
+<style>
+  :root{
+    --ease:cubic-bezier(0.32,0.72,0,1);
+    --font:'Geist Variable','Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,system-ui,'Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:var(--font);background:#000;color:#fff;-webkit-font-smoothing:antialiased;overflow:hidden;user-select:none}
+  button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+
+  /* ── The crate ─────────────────────────────────────────── */
+  .stage{position:fixed;inset:0;background:#000;overflow:hidden}
+  /* The crate scrolls horizontally — the fan is anchored to the viewport,
+     not the list, so any number of collections pass through it. */
+  .row{position:absolute;inset:0;display:flex;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  .row::-webkit-scrollbar{display:none}
+  .slot{flex:none;width:122px;position:relative;cursor:pointer;animation:drop .7s cubic-bezier(0.22,1.2,0.36,1) backwards;animation-delay:calc(min(var(--i),14)*55ms)}
+  .slot:first-child{margin-left:9vw}
+  .slot:last-child{margin-right:9vw}
+  /* Entrance: each sleeve falls from above and settles into place,
+     staggered left to right — full opacity throughout (translucent
+     overlapping sleeves read as a rendering glitch). The eased overshoot
+     gives a slight "drop into the crate" settle. */
+  @keyframes drop{from{transform:translateY(-115vh)}}
+
+  /* Labels: only the hovered sleeve's label is fully lit — everything
+     else (selected included) rests at 50%. */
+  .lab{position:absolute;top:13vh;left:10px;right:4px;opacity:.5;transition:opacity .25s;cursor:pointer;z-index:500}
+  .slot.hov .lab{opacity:1}
+  .lab .n{font-size:12.5px;font-weight:600;letter-spacing:-.01em;line-height:1.32}
+  .lab .m{font-size:10.5px;color:rgba(255,255,255,.7);margin-top:3px}
+  .lab .p{font-size:9px;margin-top:10px;color:rgba(255,255,255,.8)}
+
+  .covw{position:absolute;left:50%;top:27vh;width:320px;height:70vh;margin-left:-160px;cursor:pointer;
+    filter:brightness(var(--br,1));
+    transition:filter .55s,transform .55s var(--ease)}
+  /* 3D group: the art face plus real folded-back spines, so each sleeve
+     has cardboard thickness instead of being a zero-width plane.
+     (Brightness lives on the wrapper — a filter on the preserve-3d
+     element itself would flatten the edges.) */
+  .c3d{position:relative;width:100%;height:100%;transform-style:preserve-3d;
+    transform:perspective(950px) rotateY(var(--ry));
+    transition:transform .45s var(--ease)}
+  .cov{position:absolute;inset:0;overflow:hidden;border-radius:3px;backface-visibility:hidden;
+    /* Each sleeve throws hard onto the one behind it (to its right):
+       a tight contact shadow, a broad mid throw, and ambient depth. */
+    box-shadow:
+      28px 0 26px -12px rgba(0,0,0,.92),
+      80px 0 90px -18px rgba(0,0,0,.78),
+      0 18px 40px rgba(0,0,0,.7),
+      0 60px 120px rgba(0,0,0,.6);
+    transition:box-shadow .45s var(--ease)}
+  .slot.hov .cov{box-shadow:
+      44px 0 44px -12px rgba(0,0,0,.95),
+      110px 0 130px -16px rgba(0,0,0,.8),
+      0 26px 60px rgba(0,0,0,.75),
+      0 80px 150px rgba(0,0,0,.65)}
+  .cov::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:3;
+    background:linear-gradient(90deg,rgba(255,255,255,.30) 0%,rgba(255,255,255,0) 7%),
+               linear-gradient(105deg,rgba(255,255,255,.12),transparent 30%)}
+  .cov svg{position:absolute;inset:0;width:100%;height:100%}
+  /* Raking light: the face is lit at its near (left) edge and falls into
+     deep shadow across its width — this is most of the reference's drama.
+     The vertical gradient dissolves each sleeve's top into the dark header
+     zone (per-cover, so it can never veil the labels above). Lifts when a
+     sleeve is pulled out. */
+  .shade{position:absolute;inset:0;z-index:4;pointer-events:none;
+    background:
+      linear-gradient(180deg,rgba(0,0,0,.92) 0%,rgba(0,0,0,0) 24%),
+      linear-gradient(90deg,rgba(0,0,0,0) 4%,rgba(0,0,0,.28) 48%,rgba(0,0,0,.85) 100%);
+    transition:opacity .45s var(--ease)}
+  .slot.hov .shade{opacity:.28}
+  .slot.sel .shade{opacity:.5}
+  /* Cardboard spines: thin planes folded 90° back from each vertical edge.
+     The near-side spine is what reads as thickness when a sleeve sits
+     edge-on; the far one hides behind the face. */
+  .edge{position:absolute;top:0;bottom:0;width:12px;
+    background:linear-gradient(180deg,
+      color-mix(in srgb, var(--spine, #b9b4aa) 78%, #fff) 0%,
+      var(--spine, #b9b4aa) 48%,
+      color-mix(in srgb, var(--spine, #b9b4aa) 68%, #000) 100%);
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.14)}
+  .edge.l{left:0;transform-origin:left center;transform:rotateY(90deg)}
+  .edge.r{right:0;transform-origin:right center;transform:rotateY(-90deg)}
+  /* Only the near-side spine renders — under perspective the far edge is
+     visible "around" the face's silhouette as a phantom slab. All sleeves
+     face the same way, so it's always the right edge. */
+  .edge.l{display:none}
+  .slot.sel .c3d{transform:perspective(950px) translateZ(26px) rotateY(calc(var(--ry)*0.78))}
+  .slot.sel .covw{filter:brightness(1.03)}
+  /* Hover = pulling a book from the shelf: the sleeve comes toward the
+     viewer AND slides right, out from under its left neighbor — that
+     rightward component is what reveals the hidden left side of the
+     cover (the reveal), instead of the sleeve just growing in place.
+     Rake, layering, and neighbors stay untouched. */
+  .slot.hov .c3d{transform:perspective(950px) translateZ(60px) translateX(52px) rotateY(var(--ry))}
+  .slot.hov .covw{filter:brightness(1.1)}
+  /* Hover is the .hov class, applied by JS from the pointer's slot column —
+     never CSS :hover. :hover goes stale when the row scrolls under a
+     stationary mouse (no mouseleave fires), which left sleeves stuck on a
+     raised layer. JS re-derives hover on every mousemove AND every scroll. */
+  .covw{pointer-events:none}
+
+
+  /* ── Cover art (gradients + inline svg only) ───────────── */
+  .cv1{background:linear-gradient(155deg,#2438ff,#0a18b8)}
+  .cv1::after{content:'';position:absolute;left:12%;top:10%;width:16%;aspect-ratio:1;background:#fff}
+  .cv2{background:#E2B33C}
+  .cv2::after{content:'';position:absolute;inset:12%;border:2px solid #221605}
+  .cv3{background:#0F5A50}
+  .cv4{background:radial-gradient(120% 90% at 50% 35%,#ff6a2f 0%,#a91c05 45%,#230502 100%)}
+  .cv5{background:#14141a}
+  .cv5 .tag{position:absolute;top:6%;right:9%;font-size:9px;font-weight:600;letter-spacing:.22em;color:#d8b558;z-index:4}
+  .cv6{background:#EDEDE8}
+  .cv7{background:linear-gradient(115deg,#ff5da2 0 50%,#2a49ff 50% 100%)}
+  .cv8{background:#EFE7D8}
+  .cv8 .glyph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:ui-serif,Georgia,serif;font-size:130px;color:#191512;z-index:2}
+  .cv9{background:linear-gradient(180deg,#173f2b,#0a1f14)}
+  .cv9::after{content:'';position:absolute;left:50%;top:42%;width:46%;aspect-ratio:1;transform:translate(-50%,-50%);border:2px solid rgba(255,255,255,.85);border-radius:50%}
+  .cv10{background:linear-gradient(180deg,#7c7c80,#2e2e30)}
+  .cv10::after{content:'';position:absolute;left:12%;right:12%;bottom:14%;height:8%;background:#ecece9}
+
+  /* ── Deck (bottom overlay): just the browse hint ───────── */
+  .deck{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:flex-end;justify-content:center;padding:16vh 38px 26px;background:linear-gradient(transparent,rgba(0,0,0,.5) 45%,rgba(0,0,0,.88));z-index:600;pointer-events:none}
+  .hint{font-size:11px;color:rgba(255,255,255,.35);letter-spacing:-.003em}
+
+  @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+  <div class="stage"><div class="row" id="row"></div></div>
+
+  <div class="deck">
+    <div class="hint">← → to browse · click a sleeve to select</div>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  /* Collections — GatherOS-flavored placeholder data. s = cover style.
+     24 entries to prove the crate handles any number of collections. */
+  const C = [
+    { n:'Album art',          c:162, u:'updated 5h ago', s:1  },
+    { n:'Type specimens',     c:128, u:'updated 2d ago', s:2  },
+    { n:'Film stills',        c:118, u:'updated 8h ago', s:10 },
+    { n:'Motion frames',      c:41,  u:'updated 4d ago', s:4  },
+    { n:'Editorial layouts',  c:203, u:'updated 6h ago', s:5  },
+    { n:'Brand refs',         c:86,  u:'updated 1d ago', s:7  },
+    { n:'Color studies',      c:33,  u:'updated 1w ago', s:8  },
+    { n:'Architecture',       c:95,  u:'updated 2d ago', s:9  },
+    { n:'Interiors',          c:54,  u:'updated 3d ago', s:6  },
+    { n:'Posters',            c:149, u:'updated 3d ago', s:4  },
+    { n:'UI patterns',        c:240, u:'updated 1h ago', s:1  },
+    { n:'Product shots',      c:77,  u:'updated 6d ago', s:3  },
+    { n:'Logotypes',          c:64,  u:'updated 2d ago', s:2  },
+    { n:'Packaging',          c:112, u:'updated 9h ago', s:9  },
+    { n:'Textures',           c:58,  u:'updated 5d ago', s:6  },
+    { n:'Web design',         c:187, u:'updated 3h ago', s:5  },
+    { n:'Photography',        c:221, u:'updated 1d ago', s:10 },
+    { n:'Illustration',       c:143, u:'updated 7h ago', s:7  },
+    { n:'Typography posters', c:91,  u:'updated 4d ago', s:8  },
+    { n:'Menus',              c:27,  u:'updated 2w ago', s:2  },
+    { n:'Signage',            c:73,  u:'updated 6d ago', s:4  },
+    { n:'Book covers',        c:134, u:'updated 12h ago', s:3 },
+    { n:'Ads',                c:49,  u:'updated 1w ago', s:1  },
+    { n:'Screenshots',        c:312, u:'updated 30m ago', s:5 },
+  ];
+
+  /* Strongest color in each cover style — the sleeve spine inherits it. */
+  const SPINE = {
+    1:'#1a2bd8', 2:'#c79c2e', 3:'#0d5044', 4:'#b3320d', 5:'#20202a',
+    6:'#d6d6cf', 7:'#e0509a', 8:'#ded2ba', 9:'#14442a', 10:'#55555a',
+  };
+
+  /* Inline SVG art for the styles that need more than a gradient. */
+  function waves() {
+    let p = '';
+    for (let j = 0; j < 13; j++) {
+      const y = 40 + j * 34, a = ((j % 3) + 1) * 12;
+      p += `<path d="M24 ${y} C 100 ${y - a}, 220 ${y + a}, 296 ${y}"/>`;
+    }
+    return `<svg viewBox="0 0 320 480" preserveAspectRatio="none" fill="none" stroke="#cfe8e2" stroke-width="2" opacity=".85">${p}</svg>`;
+  }
+  function dots(fill, rBase) {
+    let c = '';
+    for (let r = 0; r < 11; r++) for (let q = 0; q < 7; q++) {
+      c += `<circle cx="${32 + q * 42}" cy="${34 + r * 42}" r="${rBase + (r % 4)}"/>`;
+    }
+    return `<svg viewBox="0 0 320 480" preserveAspectRatio="none" fill="${fill}">${c}</svg>`;
+  }
+  function covInner(s) {
+    if (s === 3) return waves();
+    if (s === 5) return `<span class="tag">ARCHIVE</span>` + dots('#23232e', 2);
+    if (s === 6) return dots('#1a1a1c', 3);
+    if (s === 8) return `<span class="glyph">Aa</span>`;
+    return '';
+  }
+
+  /* Every sleeve sits at the same rake, layered left → right — each one
+     lays on top of the one before it, like records leaning in a crate.
+     The row scrolls horizontally, so any number of collections fit. */
+  const N = C.length;
+  const RAKE = -58; // degrees — uniform for the whole crate
+
+  const row = document.getElementById('row');
+  let sel = 4;
+
+  C.forEach((c, i) => {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.style.cssText = `--i:${i};--ry:${RAKE}deg;--spine:${SPINE[c.s]}`;
+    slot.innerHTML = `
+      <div class="lab"><div class="n">${c.n}</div><div class="m">${c.c} saves</div><div class="p">▸</div></div>
+      <div class="covw"><div class="c3d"><div class="cov cv${c.s}">${covInner(c.s)}<i class="shade"></i></div><div class="edge l"></div><div class="edge r"></div></div></div>`;
+    slot.addEventListener('click', () => select(i));
+    row.appendChild(slot);
+  });
+
+  /* Hover, tracked in JS: the pointer's slot column is re-derived on every
+     mousemove AND every scroll, so hover can never go stale mid-scroll
+     (the cause of sleeves stuck on the wrong layer). On release the sleeve
+     drops straight back to its resting layer — sliding in behind its left
+     neighbor like a record going back into the crate. */
+  let hovSlot = null;
+  let lastX = null, lastY = null;
+  function setHov(s) {
+    if (s === hovSlot) return;
+    if (hovSlot) hovSlot.classList.remove('hov');
+    hovSlot = s;
+    if (s) s.classList.add('hov');
+  }
+  row.addEventListener('mousemove', (e) => {
+    lastX = e.clientX; lastY = e.clientY;
+    setHov(e.target.closest ? e.target.closest('.slot') : null);
+  });
+  row.addEventListener('mouseleave', () => { lastX = lastY = null; setHov(null); });
+  row.addEventListener('scroll', () => {
+    if (lastX === null) return;
+    const el = document.elementFromPoint(lastX, lastY);
+    setHov(el ? el.closest('.slot') : null);
+  }, { passive: true });
+
+  /* Stacking is fixed: the leftmost sleeve is always on top, each sleeve
+     tucking behind its left neighbor. Hover never changes layering —
+     the pulled sleeve just slides forward from behind its neighbor. */
+  [...row.children].forEach((slot, i) => {
+    slot.style.zIndex = String(10 + (N - i));
+  });
+
+  function select(i, instant) {
+    sel = Math.max(0, Math.min(N - 1, i));
+    [...row.children].forEach((el, j) => el.classList.toggle('sel', j === sel));
+    row.children[sel].scrollIntoView({ behavior: instant ? 'instant' : 'smooth', inline: 'center', block: 'nearest' });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') { select(sel - 1); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { select(sel + 1); e.preventDefault(); }
+  });
+
+  select(sel, true);
+  layout();
+})();
+</script>
+</body>
+</html>

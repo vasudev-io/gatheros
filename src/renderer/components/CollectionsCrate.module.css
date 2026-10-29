@@ -1,0 +1,278 @@
+/* Collections crate — dark, theatre-style browse mode. The palette is
+   intentionally fixed (not theme tokens): the crate reads as a stage in
+   both light and dark app themes, matching the prototype exactly. */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  /* Below the floating mode pill (z 45) so the Collections tab stays
+     switchable while the crate is the active tab's view. */
+  z-index: 40;
+  /* Matches the app's dark-mode canvas (--content-bg) so the crate reads
+     as the same room rather than a separate app. Hard-coded rather than
+     tokenised because the stage stays dark in the light theme too. */
+  background: #17171A;
+  font-family: var(--font-ui);
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  animation: scrimIn var(--dur-quick, 160ms) ease-out;
+}
+
+@keyframes scrimIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* The crate scrolls horizontally — any number of collections fit. */
+.row {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.row::-webkit-scrollbar { display: none; }
+
+.slot {
+  flex: none;
+  width: 122px;
+  position: relative;
+  cursor: pointer;
+}
+.slot:first-child { margin-left: 9vw; }
+.slot:last-child { margin-right: 9vw; }
+
+/* Labels: only the active sleeve's label is fully lit — the active sleeve
+   is whichever one the pointer is over, or the keyboard selection when the
+   pointer isn't on a sleeve. Everything else rests at 50%.
+
+   Horizontal anchor: the sleeve's visible left edge. At this rake
+   (perspective 950, cover 320 wide) a cover's near/right edge projects
+   +99px from its slot center, so with the 122px slot pitch each sleeve
+   emerges from behind its front neighbor 23px left of its own center —
+   i.e. at 61 − 23 = 38px. Labels start there so title and sleeve edge
+   line up down the whole crate. */
+.lab {
+  position: absolute;
+  top: 13vh;
+  left: 38px;
+  width: 114px; /* runs up to the next label's start — no overlap */
+  opacity: 0.5;
+  transition: opacity 0.25s;
+  z-index: 500;
+}
+.slot.active .lab { opacity: 1; }
+.labName {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.32;
+  /* Long titles wrap to a second line, then clamp. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.labMeta {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: 3px;
+}
+/* The ▸ tick only marks the active sleeve (hovered or keyboard-selected). */
+.labTick {
+  font-size: 9px;
+  margin-top: 10px;
+  color: rgba(255, 255, 255, 0.8);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.slot.active .labTick { opacity: 1; }
+
+.covw {
+  position: absolute;
+  left: 50%;
+  top: 27vh;
+  width: 320px;
+  height: 70vh;
+  margin-left: -160px;
+  pointer-events: none; /* hover comes from the slot column, not the overlapping planes */
+  filter: brightness(1);
+  transition: filter 0.55s;
+}
+.slot.active .covw { filter: brightness(1.1); }
+
+/* 3D group: the art face plus a real folded-back spine, so each sleeve
+   has cardboard thickness. (Brightness lives on the wrapper — a filter
+   on the preserve-3d element itself would flatten the spine.) */
+.c3d {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transform: perspective(950px) rotateY(-58deg);
+  transition: transform 0.45s var(--ease-out, cubic-bezier(0.32, 0.72, 0, 1));
+}
+/* Active = pulling a book from the shelf: the sleeve comes toward the
+   viewer AND slides right, out from under its left neighbor — the
+   rightward component is what reveals the hidden left side of the
+   cover. Rake, layering, and neighbors stay untouched. Applies whether
+   the sleeve is active by hover or by keyboard selection. */
+.slot.active .c3d { transform: perspective(950px) translateZ(60px) translateX(52px) rotateY(-58deg); }
+
+.cov {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 3px;
+  backface-visibility: hidden;
+  background: #17171a;
+  /* Each sleeve throws hard onto the one behind it (to its right):
+     a tight contact shadow, a broad mid throw, and ambient depth. */
+  box-shadow:
+    28px 0 26px -12px rgba(0, 0, 0, 0.92),
+    80px 0 90px -18px rgba(0, 0, 0, 0.78),
+    0 18px 40px rgba(0, 0, 0, 0.7),
+    0 60px 120px rgba(0, 0, 0, 0.6);
+  transition: box-shadow 0.45s var(--ease-out, cubic-bezier(0.32, 0.72, 0, 1));
+}
+.slot.active .cov {
+  box-shadow:
+    44px 0 44px -12px rgba(0, 0, 0, 0.95),
+    110px 0 130px -16px rgba(0, 0, 0, 0.8),
+    0 26px 60px rgba(0, 0, 0, 0.75),
+    0 80px 150px rgba(0, 0, 0, 0.65);
+}
+/* Rim light on the near (left) edge + a soft diagonal sheen. */
+.cov::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.30) 0%, rgba(255, 255, 255, 0) 7%),
+    linear-gradient(105deg, rgba(255, 255, 255, 0.12), transparent 30%);
+}
+.cov img,
+.cov video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  -webkit-user-drag: none;
+}
+/* Progressive load: the small (cached) thumb fills the sleeve instantly,
+   slightly blurred to read as a placeholder; the full-quality cover fades
+   in over it once decoded. The page fills at once instead of dark sleeves
+   popping to image. */
+.covBase {
+  z-index: 1;
+  filter: blur(5px);
+  transform: scale(1.05); /* hide the blur's soft edges */
+}
+.covFull {
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.covFull.loaded {
+  opacity: 1;
+}
+
+/* Raking light: the face is lit at its near (left) edge and falls into
+   deep shadow across its width. The vertical gradient dissolves each
+   sleeve's top into the dark header zone (per-cover, so it can never
+   veil the labels above). Lifts when a sleeve is pulled out. */
+.shade {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.92) 0%, rgba(0, 0, 0, 0) 24%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0) 4%, rgba(0, 0, 0, 0.28) 48%, rgba(0, 0, 0, 0.85) 100%);
+  transition: opacity 0.45s var(--ease-out, cubic-bezier(0.32, 0.72, 0, 1));
+}
+.slot.active .shade { opacity: 0.28; }
+
+/* Cardboard spine: a thin plane folded 90° back from the right edge (the
+   near side at this rake), tinted by the artwork's average color. Only
+   the near spine renders — under perspective the far edge would show
+   "around" the face's silhouette as a phantom slab. */
+.edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  transform-origin: right center;
+  transform: rotateY(-90deg);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--spine, #55555a) 78%, #fff) 0%,
+    var(--spine, #55555a) 48%,
+    color-mix(in srgb, var(--spine, #55555a) 68%, #000) 100%);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14);
+}
+
+/* Bottom overlay: atmosphere gradient + the browse hint. */
+.deck {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16vh 38px 26px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.5) 45%, rgba(0, 0, 0, 0.88));
+  z-index: 600;
+  pointer-events: none;
+}
+.hintRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: -0.003em;
+}
+/* The one action in the hint bar — quiet bordered pill, sentence case. */
+.hintBtn {
+  pointer-events: auto;
+  font-family: inherit;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+  letter-spacing: -0.003em;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: var(--radius-pill, 999px);
+  background: none;
+  cursor: pointer;
+  transition: background var(--dur-instant, 80ms) ease, color var(--dur-instant, 80ms) ease;
+}
+.hintBtn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.hintBtn:active {
+  transform: scale(0.97);
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scrim, .slot, .c3d, .cov, .shade, .covw, .lab { animation: none !important; transition: none !important; }
+}

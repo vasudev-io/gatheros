@@ -10,6 +10,22 @@ function XGlyph() {
   );
 }
 
+// The cosmos.so mark: six dots in a hexagonal ring. Fill-based; sized by CSS
+// like the other source glyphs (the non-square viewBox stays undistorted via
+// the default xMidYMid preserveAspectRatio).
+function CosmosGlyph() {
+  return (
+    <svg viewBox="0 0 38 42" fill="currentColor" aria-hidden="true">
+      <circle cx="19.02" cy="5.95" r="5.95" />
+      <circle cx="19.02" cy="35.99" r="5.95" />
+      <circle cx="5.97" cy="13.46" r="5.95" />
+      <circle cx="32.08" cy="13.46" r="5.95" />
+      <circle cx="5.97" cy="28.48" r="5.95" />
+      <circle cx="32.08" cy="28.48" r="5.95" />
+    </svg>
+  );
+}
+
 // Instagram glyph — drawn stroke-based (sized by CSS like XGlyph) so an
 // Instagram save's card reads as Instagram, not X.
 function InstagramGlyph() {
@@ -28,12 +44,19 @@ function InstagramGlyph() {
 // 'focus' (standalone card on the focused-view stage). Renders real,
 // selectable text — the captured PNG is only a thumbnail/export fallback.
 // `source` ('x' | 'instagram') picks the corner glyph + open label.
-export default function TweetCard({ meta, variant = 'grid', onOpenX = null, source = 'x' }) {
+export default function TweetCard({
+  meta, variant = 'grid', onOpenX = null, source = 'x',
+  // Given a handle, filter the library to that account. Only wired where
+  // the card isn't itself a click target — on a grid card the click would
+  // race the card's own open-the-save handler.
+  onOpenAuthor = null,
+}) {
   const [avatarOk, setAvatarOk] = useState(true);
   if (!meta) return null;
   const isIg = source === 'instagram';
-  const SourceGlyph = isIg ? InstagramGlyph : XGlyph;
-  const openLabel = isIg ? 'Open on Instagram' : 'Open on X';
+  const isCosmos = source === 'cosmos';
+  const SourceGlyph = isCosmos ? CosmosGlyph : isIg ? InstagramGlyph : XGlyph;
+  const openLabel = isCosmos ? 'Open on Cosmos' : isIg ? 'Open on Instagram' : 'Open on X';
 
   const name = (meta.authorName || meta.authorHandle || 'Unknown').trim();
   const handleRaw = (meta.authorHandle || '').trim();
@@ -63,7 +86,27 @@ export default function TweetCard({ meta, variant = 'grid', onOpenX = null, sour
             />
           )}
         </span>
-        <span className={styles.id}>
+        <span
+          className={`${styles.id}${onOpenAuthor && handle ? ` ${styles.idLink}` : ''}`}
+          {...(onOpenAuthor && handle ? {
+            role: 'button',
+            tabIndex: 0,
+            title: `Show everything saved from ${handle}`,
+            // The name and handle stay selectable text, so only treat this
+            // as a click when the user hasn't just finished a selection.
+            onClick: (e) => {
+              if (!window.getSelection()?.isCollapsed) return;
+              e.stopPropagation();
+              onOpenAuthor(handle);
+            },
+            onKeyDown: (e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              e.preventDefault();
+              e.stopPropagation();
+              onOpenAuthor(handle);
+            },
+          } : {})}
+        >
           <span className={styles.name} data-tweet-selectable>{name}</span>
           {handle && <span className={styles.handle} data-tweet-selectable>{handle}</span>}
         </span>

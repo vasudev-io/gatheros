@@ -185,7 +185,12 @@ async function handleSave(req, res) {
   // so the grid can badge it and the combined "Saved" view can filter
   // by tag. Anything unrecognised falls back to 'x' so a malformed
   // value can't orphan a row out of the existing views.
-  const source = body?.source === 'instagram' ? 'instagram' : 'x';
+  // 'cosmos' stays accepted here even though the integration is gone: saves
+  // already in the library carry it, and rejecting it would remap a
+  // resubmitted row to 'x' and mis-badge it.
+  const ALLOWED_SOURCES = new Set(['x', 'instagram', 'cosmos']);
+  const source = ALLOWED_SOURCES.has(body?.source) ? body.source : 'x';
+
   // Need at least one of: an image, a video, or a page URL. The X-
   // bookmark capture sends videoUrl for video-only tweets; right-click
   // sends an http(s) imageUrl; the extension's "capture page / area"
@@ -224,9 +229,8 @@ async function handleSave(req, res) {
     // image/page/URL saves (no tweetMeta) are never gated by this.
     if (isBookmark) {
       const settings = require('./settings');
-      const sourceEnabled = source === 'instagram'
-        ? settings.getPref('syncInstagramEnabled', true) !== false
-        : settings.getPref('syncXEnabled', true) !== false;
+      const syncPrefKey = source === 'instagram' ? 'syncInstagramEnabled' : 'syncXEnabled';
+      const sourceEnabled = settings.getPref(syncPrefKey, true) !== false;
       if (!sourceEnabled) {
         sendJson(res, 200, { ok: true, skipped: true, syncDisabled: true });
         return;
@@ -272,6 +276,7 @@ async function handleSave(req, res) {
         }
       }
     };
+
 
     // Text-only tweet (no media): render the tweet card itself to an
     // image so it lands in the library like any other save, with the
@@ -368,9 +373,9 @@ async function handleSave(req, res) {
       notes: notes || null,
       tweetMeta,
       source,
-      // Synced posts (tweetMeta present) ride the descending sync clock so
-      // a newest-first stream stays newest-first in the app; one-off image
-      // saves keep the default now-timestamp.
+      // Synced batches (X/IG history) keep the descending sync clock so a
+      // newest-first stream keeps its order; one-off image saves keep the
+      // default now-timestamp.
       createdAt: tweetMeta ? nextSyncCreatedAt() : undefined,
     });
     attachTags(record.id);

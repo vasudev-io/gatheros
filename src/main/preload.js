@@ -108,6 +108,8 @@ contextBridge.exposeInMainWorld('moodmark', {
     restore: (id) => ipcRenderer.invoke('saves:restore', id),
     markViewed: (id) => ipcRenderer.invoke('saves:mark-viewed', id),
     recentlyViewed: (limit) => ipcRenderer.invoke('saves:recently-viewed', limit),
+    setHidden: (id, hidden) => ipcRenderer.invoke('saves:set-hidden', { id, hidden }),
+    showAllHidden: () => ipcRenderer.invoke('saves:show-all-hidden'),
     permanentDelete: (id) => ipcRenderer.invoke('saves:permanent-delete', id),
     emptyTrash: () => ipcRenderer.invoke('saves:empty-trash'),
     counts: () => ipcRenderer.invoke('saves:counts'),
@@ -166,6 +168,7 @@ contextBridge.exposeInMainWorld('moodmark', {
     containingAll: (saveIds) => ipcRenderer.invoke('collections:containing-all', saveIds),
     create: (payload) => ipcRenderer.invoke('collections:create', payload),
     rename: (payload) => ipcRenderer.invoke('collections:rename', payload),
+    setCover: (id, saveId) => ipcRenderer.invoke('collections:set-cover', { id, saveId }),
     setParent: (id, parentId) => ipcRenderer.invoke('collections:set-parent', { id, parentId }),
     delete: (id) => ipcRenderer.invoke('collections:delete', id),
     reorder: (ids) => ipcRenderer.invoke('collections:reorder', ids),
@@ -194,6 +197,9 @@ contextBridge.exposeInMainWorld('moodmark', {
     bulkUpdateItems: (payload) => ipcRenderer.invoke('boards:bulk-update-items', payload),
     deleteItem: (payload) => ipcRenderer.invoke('boards:delete-item', payload),
     deleteItems: (payload) => ipcRenderer.invoke('boards:delete-items', payload),
+  },
+  authors: {
+    getAll: () => ipcRenderer.invoke('authors:get-all'),
   },
   tags: {
     getAll: () => ipcRenderer.invoke('tags:get-all'),

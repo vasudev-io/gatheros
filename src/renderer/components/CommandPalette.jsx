@@ -60,6 +60,19 @@ function InstagramMark({ size = 12 }) {
     </svg>
   );
 }
+// The cosmos.so mark: six dots in a hexagonal ring, tinted via currentColor.
+function CosmosMark({ size = 12 }) {
+  return (
+    <svg viewBox="0 0 38 42" width={size} height={size} fill="currentColor" aria-hidden="true">
+      <circle cx="19.02" cy="5.95" r="5.95" />
+      <circle cx="19.02" cy="35.99" r="5.95" />
+      <circle cx="5.97" cy="13.46" r="5.95" />
+      <circle cx="32.08" cy="13.46" r="5.95" />
+      <circle cx="5.97" cy="28.48" r="5.95" />
+      <circle cx="32.08" cy="28.48" r="5.95" />
+    </svg>
+  );
+}
 
 // A captured social post carries tweet_meta (or an x/instagram source).
 // Returns the source-aware kind label + glyph, or a plain "Save".
@@ -69,8 +82,12 @@ function saveKind(s) {
   const url = s.source_url || '';
   const isSocial = hasMeta
     || s.source === 'instagram'
-    || /(?:x\.com|twitter\.com|instagram\.com)/i.test(url);
+    || s.source === 'cosmos'
+    || /(?:x\.com|twitter\.com|instagram\.com|cosmos\.so)/i.test(url);
   if (!isSocial) return { label: 'Save', glyph: null };
+  if (s.source === 'cosmos' || /cosmos\.so/i.test(url)) {
+    return { label: 'Cosmos', glyph: <CosmosMark /> };
+  }
   if (s.source === 'instagram' || /instagram\.com/i.test(url)) {
     return { label: 'Instagram', glyph: <InstagramMark /> };
   }

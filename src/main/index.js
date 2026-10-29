@@ -42,6 +42,13 @@ if (!app.requestSingleInstanceLock()) {
 // the initial window show (below) and the second-instance focus are
 // suppressed. Saving a bookmark is a background sync, never a foreground
 // interruption.
+// Kill the two-finger trackpad "swipe to go back/forward" gesture. The app
+// is a single-page surface with its own horizontal scrollers (the
+// collections crate, chip rails), so overscroll history navigation just
+// yanks the user between screens when a fast sideways scroll runs past a
+// scroller's end. Must be set before the app is ready.
+app.commandLine.appendSwitch('disable-features', 'TouchpadOverscrollHistoryNavigation,OverscrollHistoryNavigation');
+
 const LAUNCHED_FOR_BG_SAVE = process.argv.includes('--gatheros-bg');
 app.on('second-instance', (_event, argv) => {
   // A relaunch carrying the sentinel is the host nudging an already-
@@ -132,7 +139,7 @@ const {
 } = require('./capture');
 const extensionServer = require('./extension-server');
 const { showToast, destroyToastWindow } = require('./toast-window');
-const { setSaveNotifier, setDuplicateNotifier, setNeedsUpgradeNotifier, setBookmarkNotifier, setBookmarkFailedNotifier, setErrorNotifier, setTrayRefresher, notifyError } = require('./notify');
+const { setSaveNotifier, setDuplicateNotifier, setNeedsUpgradeNotifier, setBookmarkNotifier, setBookmarkFailedNotifier, setErrorNotifier, setTrayRefresher, setSaveOpener, notifyError } = require('./notify');
 const { initUpdater } = require('./updater');
 const { getInitialOptions: getWindowInitialOptions, track: trackWindowState } = require('./window-state');
 const libraryRegistry = require('./library-registry');
@@ -1020,6 +1027,9 @@ app.whenReady().then(() => {
     }
   }
   setSaveNotifier(notifySaved);
+  // Clicking the save toast opens the asset inside Gather — reuse the
+  // tray's "bring the app forward and open this save" flow.
+  setSaveOpener(openSaveFromTray);
   setDuplicateNotifier(notifyDuplicateInRenderer);
   setNeedsUpgradeNotifier(notifyNeedsUpgrade);
   setBookmarkNotifier(notifyBookmarkSaved);

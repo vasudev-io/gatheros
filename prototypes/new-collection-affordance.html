@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New collection affordance in the crate</title>
+<style>
+  :root{
+    --ease:cubic-bezier(0.32,0.72,0,1);
+    --font:'Geist Variable','Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,system-ui,'Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:var(--font);background:#0c0c0d;color:#fff;-webkit-font-smoothing:antialiased;overflow:hidden}
+  button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+
+  /* ── Shell ─────────────────────────────────────────────── */
+  .bar{display:flex;align-items:center;gap:18px;height:52px;padding:0 18px;background:#0c0c0d;border-bottom:1px solid rgba(255,255,255,.08);position:relative;z-index:950}
+  .bar h1{font-size:13px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+  .bar .keys{font-size:11px;color:rgba(255,255,255,.35);margin-left:auto;white-space:nowrap}
+  .tabs{display:flex;gap:4px}
+  .tab{display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:500;color:rgba(255,255,255,.55);transition:all .15s}
+  .tab i{font-style:normal;font-size:10.5px;font-weight:600;width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(255,255,255,.1)}
+  .tab:hover{color:#fff}
+  .tab.on{background:#fff;color:#000}
+  .tab.on i{background:rgba(0,0,0,.12)}
+  main{position:fixed;inset:52px 0 0 0}
+  .panel{position:absolute;inset:0;display:none;flex-direction:column}
+  .panel.on{display:flex}
+  .rat{display:flex;align-items:baseline;gap:12px;padding:11px 22px;font-size:12px;line-height:1.45;flex:none;color:rgba(255,255,255,.55);background:rgba(255,255,255,.02)}
+  .rat b{font-size:13px;font-weight:600;color:#fff;white-space:nowrap}
+  .stage{flex:1;position:relative;overflow:hidden;background:#000}
+
+  /* ── Crate (final design, compact) ─────────────────────── */
+  .row{position:absolute;inset:0;display:flex;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  .row::-webkit-scrollbar{display:none}
+  .slot{flex:none;width:108px;position:relative;cursor:pointer;animation:drop .7s cubic-bezier(0.22,1.2,0.36,1) backwards;animation-delay:calc(var(--i)*50ms)}
+  .slot:first-child{margin-left:8vw}
+  .slot:last-child{margin-right:8vw}
+  @keyframes drop{from{transform:translateY(-115vh)}}
+
+  .lab{position:absolute;top:9vh;left:8px;right:2px;opacity:.5;transition:opacity .25s;z-index:500}
+  .slot.hov .lab{opacity:1}
+  .lab .n{font-size:12px;font-weight:600;letter-spacing:-.01em;line-height:1.3}
+  .lab .m{font-size:10px;color:rgba(255,255,255,.7);margin-top:3px}
+  .lab .p{font-size:8px;margin-top:8px;color:rgba(255,255,255,.8)}
+
+  .covw{position:absolute;left:50%;top:21vh;width:280px;height:62vh;margin-left:-140px;pointer-events:none;filter:brightness(1);transition:filter .55s}
+  .slot.hov .covw{filter:brightness(1.1)}
+  .c3d{position:relative;width:100%;height:100%;transform-style:preserve-3d;transform:perspective(950px) rotateY(-58deg);transition:transform .45s var(--ease)}
+  .slot.hov .c3d{transform:perspective(950px) translateZ(56px) translateX(48px) rotateY(-58deg)}
+  .cov{position:absolute;inset:0;overflow:hidden;border-radius:3px;backface-visibility:hidden;background:#17171a;
+    box-shadow:24px 0 24px -11px rgba(0,0,0,.92),70px 0 80px -16px rgba(0,0,0,.78),0 18px 40px rgba(0,0,0,.7),0 60px 120px rgba(0,0,0,.6);
+    transition:box-shadow .45s var(--ease)}
+  .slot.hov .cov{box-shadow:38px 0 40px -11px rgba(0,0,0,.95),96px 0 116px -14px rgba(0,0,0,.8),0 26px 60px rgba(0,0,0,.75),0 80px 150px rgba(0,0,0,.65)}
+  .cov::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:3;
+    background:linear-gradient(90deg,rgba(255,255,255,.30) 0%,rgba(255,255,255,0) 7%),linear-gradient(105deg,rgba(255,255,255,.12),transparent 30%)}
+  .shade{position:absolute;inset:0;z-index:4;pointer-events:none;
+    background:linear-gradient(180deg,rgba(0,0,0,.92) 0%,rgba(0,0,0,0) 24%),linear-gradient(90deg,rgba(0,0,0,0) 4%,rgba(0,0,0,.28) 48%,rgba(0,0,0,.85) 100%);
+    transition:opacity .45s var(--ease)}
+  .slot.hov .shade{opacity:.28}
+  .edge{position:absolute;top:0;bottom:0;right:0;width:11px;transform-origin:right center;transform:rotateY(-90deg);
+    background:linear-gradient(180deg,color-mix(in srgb,var(--spine,#55555a) 78%,#fff) 0%,var(--spine,#55555a) 48%,color-mix(in srgb,var(--spine,#55555a) 68%,#000) 100%);
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.14)}
+  .deckfade{position:absolute;left:0;right:0;bottom:0;height:22vh;background:linear-gradient(transparent,rgba(0,0,0,.5) 45%,rgba(0,0,0,.88));z-index:600;pointer-events:none}
+  .hintrow{position:absolute;left:0;right:0;bottom:22px;display:flex;align-items:center;justify-content:center;gap:14px;z-index:610}
+  .hint{font-size:11px;color:rgba(255,255,255,.35);letter-spacing:-.003em}
+
+  /* Cover art (gradients + glyphs only) */
+  .cv1{background:linear-gradient(155deg,#2438ff,#0a18b8)}
+  .cv2{background:#E2B33C}
+  .cv3{background:radial-gradient(120% 90% at 50% 35%,#ff6a2f 0%,#a91c05 45%,#230502 100%)}
+  .cv4{background:#14141a}
+  .cv5{background:linear-gradient(180deg,#173f2b,#0a1f14)}
+  .cv6{background:#EDEDE8}
+  .cv7{background:linear-gradient(115deg,#ff5da2 0 50%,#2a49ff 50% 100%)}
+  .cv8{background:linear-gradient(180deg,#7c7c80,#2e2e30)}
+
+  /* ── 1 · Ghost sleeve ──────────────────────────────────── */
+  .slot.ghost .cov{background:rgba(255,255,255,.03);border:1.5px dashed rgba(255,255,255,.28);box-shadow:none}
+  .slot.ghost .cov::before{display:none}
+  .slot.ghost .edge{display:none}
+  .slot.ghost .plus{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:64px;font-weight:200;color:rgba(255,255,255,.55)}
+  .slot.ghost.hov .cov{border-color:rgba(255,255,255,.6);background:rgba(255,255,255,.06)}
+  .slot.naming .c3d{transform:perspective(950px) translateZ(120px) rotateY(0deg)}
+  .slot.naming{z-index:900 !important}
+  .nameform{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:6}
+  .nameform input{width:70%;padding:10px 12px;border:1px solid rgba(255,255,255,.3);border-radius:8px;background:rgba(0,0,0,.5);color:#fff;font-family:inherit;font-size:14px;text-align:center;outline:none}
+  .nameform input:focus{border-color:rgba(255,255,255,.6)}
+  .nameform .tip{font-size:10.5px;color:rgba(255,255,255,.45)}
+
+  /* ── 2 · Divider card ──────────────────────────────────── */
+  .slot.divider .covw{top:17vh;height:66vh}
+  .slot.divider .cov{background:#1d1e21;border:1px solid rgba(255,255,255,.10);box-shadow:24px 0 24px -11px rgba(0,0,0,.9),0 18px 40px rgba(0,0,0,.7)}
+  .slot.divider .cov::before{display:none}
+  .slot.divider .tabTop{position:absolute;top:0;left:0;right:0;height:64px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.07);border-bottom:1px solid rgba(255,255,255,.10);font-size:26px;font-weight:300;color:rgba(255,255,255,.8)}
+  .slot.divider .divLabel{position:absolute;left:0;right:0;top:46%;text-align:center;font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.45)}
+
+  /* ── 3 · Floating pill ─────────────────────────────────── */
+  .fab{position:absolute;right:26px;bottom:26px;z-index:700;display:flex;align-items:center;gap:8px;padding:11px 18px;border-radius:999px;
+    background:linear-gradient(rgba(255,255,255,.85),rgba(255,255,255,.65));color:#000;font-size:12.5px;font-weight:600;letter-spacing:-.01em;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 1px 2px rgba(0,0,0,.3),0 12px 32px rgba(0,0,0,.5);
+    transition:transform .15s var(--ease)}
+  .fab:hover{transform:scale(1.04)}
+  .fab:active{transform:scale(.97)}
+  .fab .pl{font-size:15px;font-weight:400;line-height:1}
+
+  /* ── 4 · Hint-bar action ───────────────────────────────── */
+  .hintbtn{font-size:11px;color:rgba(255,255,255,.75);letter-spacing:-.003em;padding:5px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;transition:all .15s}
+  .hintbtn:hover{background:rgba(255,255,255,.1);color:#fff}
+
+  /* ── 5 · Label-lane plus ───────────────────────────────── */
+  .slot.labonly{width:130px}
+  .slot.labonly .lab{opacity:.55}
+  .slot.labonly.hov .lab{opacity:1}
+  .slot.labonly .lab .n{color:rgba(255,255,255,.9)}
+  .slot.labonly .lab .plusRow{display:flex;align-items:center;gap:7px}
+  .slot.labonly .lab .plusRow .pchip{width:18px;height:18px;border-radius:50%;border:1px solid rgba(255,255,255,.4);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:300}
+
+  @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+  <header class="bar">
+    <h1>New collection affordance in the crate</h1>
+    <nav class="tabs" id="tabs"></nav>
+    <span class="keys">keys 1–5 switch · every version is clickable</span>
+  </header>
+  <main id="main"></main>
+
+<script>
+(() => {
+  'use strict';
+
+  const DATA = [
+    { n:'Album art', c:162, s:1 }, { n:'Type specimens', c:128, s:2 },
+    { n:'Motion frames', c:41, s:3 }, { n:'Editorial layouts', c:203, s:4 },
+    { n:'Architecture', c:95, s:5 }, { n:'Interiors', c:54, s:6 },
+    { n:'Brand refs', c:86, s:7 }, { n:'Film stills', c:118, s:8 },
+    { n:'Posters', c:149, s:3 }, { n:'UI patterns', c:240, s:1 },
+  ];
+  const SPINE = { 1:'#1a2bd8', 2:'#c79c2e', 3:'#b3320d', 4:'#20202a', 5:'#14442a', 6:'#d6d6cf', 7:'#e0509a', 8:'#55555a' };
+
+  const ITS = [
+    { key:'ghost',   name:'Ghost sleeve',    rat:'An empty, dashed sleeve waits at the end of the crate. Clicking pulls it out flat and names it in place — the collection is literally a blank record you fill in. Most in-metaphor; creation happens where the result will live.' },
+    { key:'divider', name:'Divider card',    rat:'A record-store section divider stands at the FRONT of the crate with a + tab. Always the first thing you see, reads as furniture rather than content, and keeps every real sleeve to its right.' },
+    { key:'fab',     name:'Floating pill',   rat:'A glass pill floating bottom-right, matching the app’s FAB idiom. The crate stays pure content; creation is chrome. Most conventional and most discoverable at a glance.' },
+    { key:'hint',    name:'Hint-bar action', rat:'The bottom hint line carries a small bordered “+ new collection” button. Quietest option — zero stage presence until you look at the help line, where your eyes already go to learn the controls.' },
+    { key:'lab',     name:'Label-lane plus', rat:'The label lane (where titles live) ends with a “+ new collection” entry — no sleeve below it. The affordance lives in the typographic layer, and the sleeve only materializes once you create.' },
+  ];
+
+  const tabs = document.getElementById('tabs');
+  const main = document.getElementById('main');
+  const panels = [];
+
+  ITS.forEach((it, i) => {
+    const b = document.createElement('button');
+    b.className = 'tab';
+    b.innerHTML = `<i>${i + 1}</i>${it.name}`;
+    b.addEventListener('click', () => show(i));
+    tabs.appendChild(b);
+    const p = document.createElement('section');
+    p.className = 'panel';
+    p.innerHTML = `<div class="rat"><b>${i + 1} · ${it.name}</b><span>${it.rat}</span></div>
+      <div class="stage" id="stage-${it.key}"><div class="row"></div><div class="deckfade"></div><div class="hintrow" id="hintrow-${it.key}"></div></div>`;
+    main.appendChild(p);
+    panels.push(p);
+  });
+
+  let cur = 0;
+  function show(i) {
+    cur = i;
+    panels.forEach((p, j) => p.classList.toggle('on', j === i));
+    [...tabs.children].forEach((t, j) => t.classList.toggle('on', j === i));
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key >= '1' && e.key <= '5') show(Number(e.key) - 1);
+  });
+
+  /* ── Shared crate builder ── */
+  function sleeveHTML(item, i) {
+    return `
+      <div class="lab"><div class="n">${item.n}</div><div class="m">${item.c} saves</div><div class="p">▸</div></div>
+      <div class="covw"><div class="c3d"><div class="cov cv${item.s}"><i class="shade"></i></div><div class="edge"></div></div></div>`;
+  }
+  function makeSlot(item, i) {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.style.cssText = `--i:${Math.min(i, 14)};--spine:${SPINE[item.s]};z-index:${10 + (200 - i)}`;
+    slot.innerHTML = sleeveHTML(item, i);
+    return slot;
+  }
+  function wireHover(stage) {
+    const row = stage.querySelector('.row');
+    let lastXY = null;
+    const setHov = (slot) => {
+      [...row.children].forEach((el) => el.classList.toggle('hov', el === slot));
+    };
+    row.addEventListener('mousemove', (e) => {
+      lastXY = [e.clientX, e.clientY];
+      setHov(e.target.closest ? e.target.closest('.slot') : null);
+    });
+    row.addEventListener('mouseleave', () => { lastXY = null; setHov(null); });
+    row.addEventListener('scroll', () => {
+      if (!lastXY) return;
+      const el = document.elementFromPoint(lastXY[0], lastXY[1]);
+      setHov(el ? el.closest('.slot') : null);
+    }, { passive: true });
+  }
+  function buildRow(stage, items) {
+    const row = stage.querySelector('.row');
+    items.forEach((item, i) => row.appendChild(makeSlot(item, i)));
+    wireHover(stage);
+    return row;
+  }
+  /* Drop a brand-new sleeve into the crate (used by every direction). */
+  function addNewSleeve(row, beforeEl, name) {
+    const item = { n: name || 'New collection', c: 0, s: 4 };
+    const slot = makeSlot(item, 0);
+    slot.style.setProperty('--i', 0); // animate immediately
+    slot.style.zIndex = 5; // behind its left neighbors, per crate stacking
+    row.insertBefore(slot, beforeEl || null);
+    slot.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    return slot;
+  }
+  function hintEl(html) {
+    const d = document.createElement('div');
+    d.className = 'hint';
+    d.innerHTML = html;
+    return d;
+  }
+
+  /* ── 1 · Ghost sleeve ── */
+  {
+    const stage = document.getElementById('stage-ghost');
+    const row = buildRow(stage, DATA);
+    document.getElementById('hintrow-ghost').appendChild(hintEl('← → to browse · click a sleeve to open'));
+
+    function appendGhost() {
+      const g = document.createElement('div');
+      g.className = 'slot ghost';
+      g.style.cssText = `--i:${Math.min(DATA.length, 14)};--spine:#55555a;z-index:5`;
+      g.innerHTML = `
+        <div class="lab"><div class="n">New collection</div><div class="m">start from empty</div><div class="p">＋</div></div>
+        <div class="covw"><div class="c3d"><div class="cov"><span class="plus">＋</span></div></div></div>`;
+      g.addEventListener('click', () => {
+        if (g.classList.contains('naming')) return;
+        g.classList.add('naming');
+        const cov = g.querySelector('.cov');
+        cov.innerHTML = `<div class="nameform"><input type="text" placeholder="Name your collection" maxlength="40"><div class="tip">enter to create · esc to cancel</div></div>`;
+        const input = cov.querySelector('input');
+        setTimeout(() => input.focus(), 250);
+        input.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter' && input.value.trim()) {
+            const name = input.value.trim();
+            g.remove();
+            addNewSleeve(row, null, name);
+            appendGhost();
+          } else if (e.key === 'Escape') {
+            g.classList.remove('naming');
+            cov.innerHTML = '<span class="plus">＋</span>';
+          }
+        });
+      });
+      row.appendChild(g);
+    }
+    appendGhost();
+  }
+
+  /* ── 2 · Divider card ── */
+  {
+    const stage = document.getElementById('stage-divider');
+    const row = buildRow(stage, DATA);
+    document.getElementById('hintrow-divider').appendChild(hintEl('← → to browse · click a sleeve to open'));
+
+    const d = document.createElement('div');
+    d.className = 'slot divider';
+    d.style.cssText = '--i:0;z-index:400';
+    d.innerHTML = `
+      <div class="lab"><div class="n">New collection</div><div class="m">&nbsp;</div><div class="p">＋</div></div>
+      <div class="covw"><div class="c3d"><div class="cov"><div class="tabTop">＋</div><div class="divLabel">New</div></div></div></div>`;
+    d.addEventListener('click', () => {
+      addNewSleeve(row, d.nextSibling);
+    });
+    row.insertBefore(d, row.firstChild);
+  }
+
+  /* ── 3 · Floating pill ── */
+  {
+    const stage = document.getElementById('stage-fab');
+    const row = buildRow(stage, DATA);
+    document.getElementById('hintrow-fab').appendChild(hintEl('← → to browse · click a sleeve to open'));
+    const fab = document.createElement('button');
+    fab.className = 'fab';
+    fab.innerHTML = '<span class="pl">＋</span><span>New collection</span>';
+    fab.addEventListener('click', () => addNewSleeve(row, null));
+    stage.appendChild(fab);
+  }
+
+  /* ── 4 · Hint-bar action ── */
+  {
+    const stage = document.getElementById('stage-hint');
+    const row = buildRow(stage, DATA);
+    const hr = document.getElementById('hintrow-hint');
+    hr.appendChild(hintEl('← → to browse · click a sleeve to open'));
+    const btn = document.createElement('button');
+    btn.className = 'hintbtn';
+    btn.textContent = '＋ new collection';
+    btn.addEventListener('click', () => addNewSleeve(row, null));
+    hr.appendChild(btn);
+  }
+
+  /* ── 5 · Label-lane plus ── */
+  {
+    const stage = document.getElementById('stage-lab');
+    const row = buildRow(stage, DATA);
+    document.getElementById('hintrow-lab').appendChild(hintEl('← → to browse · click a sleeve to open'));
+    const L = document.createElement('div');
+    L.className = 'slot labonly';
+    L.style.cssText = `--i:${Math.min(DATA.length, 14)};z-index:5`;
+    L.innerHTML = `
+      <div class="lab">
+        <div class="plusRow"><span class="pchip">＋</span><span class="n">New collection</span></div>
+        <div class="m">appears here once created</div>
+      </div>`;
+    L.addEventListener('click', () => addNewSleeve(row, L));
+    row.appendChild(L);
+  }
+
+  show(0);
+})();
+</script>
+</body>
+</html>

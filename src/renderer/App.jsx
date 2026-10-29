@@ -10,6 +10,7 @@ import QuickLookOverlay from './components/QuickLookOverlay.jsx';
 import BulkTagPicker from './components/BulkTagPicker.jsx';
 import MoodboardPreview from './components/MoodboardPreview.jsx';
 import RediscoverMode from './components/RediscoverMode.jsx';
+import CollectionsCrate from './components/CollectionsCrate.jsx';
 import SettingsModal from './components/SettingsModal.jsx';
 import AIUnlockedModal from './components/AIUnlockedModal.jsx';
 import SaveUrlModal from './components/SaveUrlModal.jsx';
@@ -26,7 +27,6 @@ import Grid from './components/Grid.jsx';
 import FeaturedBuckets from './components/FeaturedBuckets.jsx';
 import ChildCollectionsRail from './components/ChildCollectionsRail.jsx';
 import CollectionDropDock from './components/CollectionDropDock.jsx';
-import FolderGrid from './components/FolderGrid.jsx';
 import BoardGrid from './components/BoardGrid.jsx';
 import SmartChipRail from './components/SmartChipRail.jsx';
 import DetailPanelV1 from './components/DetailPanel.jsx';
@@ -69,6 +69,8 @@ import {
   Shuffle,
   Search,
   Images,
+  ImagePlus,
+  SquarePen,
   Folder,
   Eclipse,
   Moon,
@@ -83,11 +85,12 @@ import {
   Tag,
   Crop,
   RefreshCw,
-  Volume2,
   RotateCw,
   HardDrive,
   Database,
   Info,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { useLibrary } from './hooks/useLibrary.js';
 import { useUndoStack } from './hooks/useUndoStack.js';
@@ -97,7 +100,7 @@ import { fileUrl } from './lib/fileUrl.js';
 import { flyToCollection } from './lib/flyToCollection.js';
 import { seededShuffle } from './lib/shuffle.js';
 import { tweetTypeOf } from './lib/tweetType.js';
-import { configureSaveSound, DEFAULT_SAVE_SOUND, playEmptyTrashSound } from './lib/sounds.js';
+import { playEmptyTrashSound } from './lib/sounds.js';
 import OnboardingOverlay from './onboarding/OnboardingOverlay.jsx';
 import { useOnboarding, ONBOARDING_DONE_PREF } from './onboarding/OnboardingContext.jsx';
 import { EntitlementProvider, requestUpgrade, PENDING_UPGRADE_KEY } from './context/entitlement.jsx';
@@ -120,6 +123,8 @@ const ICON = { strokeWidth: 1.6, 'aria-hidden': true };
 // selection, so a simple play triangle reads as "press to see it move".
 // Solid fill in the current icon colour, no outline stroke.
 const BoardExportIcon = () => <Play fill="currentColor" stroke="none" aria-hidden="true" />;
+const EyeIcon = () => <Eye {...ICON} />;
+const EyeOffIcon = () => <EyeOff {...ICON} />;
 const DownloadIcon = () => <Download {...ICON} />;
 const ClearIcon = () => <X {...ICON} strokeWidth={2} />;
 const TrashIcon = () => <Trash2 {...ICON} />;
@@ -127,6 +132,7 @@ const InboxIcon = () => <Inbox {...ICON} />;
 const RestoreIcon = () => <RotateCcw {...ICON} />;
 const SimilarIcon = () => <Copy {...ICON} />;
 const MinusCircleIcon = () => <MinusCircle {...ICON} />;
+const CoverIcon = () => <ImagePlus {...ICON} />;
 const SortFabIcon = () => <Focus {...ICON} />;
 const ClipboardIcon = () => <Clipboard {...ICON} />;
 const ExternalLinkIcon = () => <ExternalLink {...ICON} />;
@@ -519,6 +525,21 @@ export default function App({ entitlement } = {}) {
   // a stale alt-image selection across.
   const [focusedAltImageIdx, setFocusedAltImageIdx] = useState(0);
   useEffect(() => { setFocusedAltImageIdx(0); }, [focusedId]);
+
+  // Jump to everything saved from one account. Clicking a bookmark's byline
+  // is the fastest route into the from: filter — no syntax, no typing.
+  // handleModeChange clears the query on its way into Search; setting ours
+  // right after lands in the same React batch, so the clear never renders.
+  const handleFilterByAuthor = useCallback((handle) => {
+    const h = String(handle || '').trim().replace(/^@+/, '');
+    if (!h) return;
+    setFocusedId(null);
+    handleModeChange('search');
+    const query = `from:${h}`;
+    setSearch(query);
+    recentSearches.recordSearch(query);
+  }, [handleModeChange, setSearch, recentSearches]);
+
   // Spacebar Quick Look — a lightweight, dismissible peek of the
   // currently-focused save without opening the full focused view.
   // Holds a save id while the overlay is up, null when dismissed.
@@ -814,12 +835,6 @@ export default function App({ entitlement } = {}) {
     window.moodmark.ai.hasSession().then(setAiConfigured);
     window.moodmark.settings.getPrefs().then((p) => {
       setPrefs(p);
-      // Prime the save-sound engine from saved prefs.
-      configureSaveSound({
-        sound: p?.saveSound ?? DEFAULT_SAVE_SOUND,
-        enabled: p?.saveSoundEnabled !== false,
-        volume: typeof p?.saveSoundVolume === 'number' ? p.saveSoundVolume : 0.6,
-      });
       // First-launch auto-trigger for the walkthrough. The flag is
       // written when the user finishes (or dismisses) the tour, so
       // it only fires on a truly fresh install. Settings → Help →
@@ -887,7 +902,7 @@ export default function App({ entitlement } = {}) {
   const [collections, setCollections] = useState([]);
   // Counts that drive the sidebar's smart-view badges (All / Unsorted /
   // Trash). Refreshed alongside collections.
-  const [smartCounts, setSmartCounts] = useState({ all: 0, unsorted: 0, trash: 0, bookmarks: 0, onThisDay: 0 });
+  const [smartCounts, setSmartCounts] = useState({ all: 0, unsorted: 0, trash: 0, bookmarks: 0, onThisDay: 0, hidden: 0 });
 
   const loadCollections = useCallback(async () => {
     const [cols, counts] = await Promise.all([
@@ -899,7 +914,7 @@ export default function App({ entitlement } = {}) {
     setCollections(cols);
     setSmartCounts(counts && typeof counts === 'object'
       ? counts
-      : { all: 0, unsorted: 0, trash: 0, bookmarks: 0, onThisDay: 0 });
+      : { all: 0, unsorted: 0, trash: 0, bookmarks: 0, onThisDay: 0, hidden: 0 });
   }, []);
 
   useEffect(() => { loadCollections(); }, [loadCollections]);
@@ -991,6 +1006,22 @@ export default function App({ entitlement } = {}) {
   }, []);
 
   useEffect(() => { loadAllTags(); }, [loadAllTags]);
+
+  // Accounts whose posts you've saved — powers the search field's from:
+  // autocomplete. Every bookmark already carries its author in tweet_meta;
+  // this is the first thing that lets you navigate by it. Reloaded with the
+  // library so newly synced bookmarks bring their authors along.
+  const [allAuthors, setAllAuthors] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await window.moodmark.authors.getAll();
+        if (!cancelled) setAllAuthors(Array.isArray(data) ? data : []);
+      } catch { /* older preload — from: just has no suggestions */ }
+    })();
+    return () => { cancelled = true; };
+  }, [saves.length]);
 
   // Most-used tags, surfaced as quick-jump chips on the Search tab's
   // landing state. Sorted by usage so the densest tags lead. Filters:
@@ -1186,6 +1217,8 @@ export default function App({ entitlement } = {}) {
 
   // Card context menu
   const [cardCtx, setCardCtx] = useState(null); // { saveId, x, y, items }
+  // Collection-options (⋯) menu opened from the collection title. { x, y }.
+  const [collectionMenu, setCollectionMenu] = useState(null);
   // Bulk "Add to Collection" picker, anchored above the selection bar.
   const [bulkPicker, setBulkPicker] = useState(null); // { x, y }
   const [bulkTagPicker, setBulkTagPicker] = useState(null); // { x, y } | null
@@ -1226,6 +1259,24 @@ export default function App({ entitlement } = {}) {
       return items;
     }
     if (view.type === 'collection') {
+      // Set the sleeve cover for the collection being viewed. Single-save
+      // only (a cover is one image), and only when the save actually
+      // lives in this exact collection (not just a child of it), since
+      // setCollectionCover requires direct membership.
+      if (!isMulti && (memberIds || []).includes(view.id)) {
+        items.push({
+          label: 'Set as collection cover',
+          icon: <CoverIcon />,
+          onClick: async () => {
+            try {
+              await window.moodmark.collections.setCover(view.id, saveId);
+              loadCollections();
+            } catch (err) {
+              console.error('[cover] setCover failed:', err);
+            }
+          },
+        });
+      }
       // Membership-aware removal. The menu already knows which
       // collections hold the save(s) (memberIds resolved at open), so
       // when the membership within this view's subtree is known, offer
@@ -1398,6 +1449,36 @@ export default function App({ entitlement } = {}) {
       });
     }
 
+    // Hide from / show in the main library grid. A hidden save drops
+    // out of the plain All grid but stays in collections, Unsorted,
+    // Saved, and search — "hide from the feed, keep everywhere else".
+    // Available in every non-trash view; the label reflects state.
+    {
+      const targets = targetIds.map((id) => saves.find((s) => s.id === id)).filter(Boolean);
+      const allHidden = targets.length > 0 && targets.every((s) => s.hidden_at);
+      if (items.length > 0) items.push({ type: 'separator' });
+      items.push({
+        label: allHidden ? `Show in library${suffix}` : `Hide from library${suffix}`,
+        icon: allHidden ? <EyeIcon /> : <EyeOffIcon />,
+        onClick: async () => {
+          const next = !allHidden;
+          for (const id of targetIds) {
+            await window.moodmark.saves.setHidden(id, next);
+          }
+          if (isMulti) setSelected(new Set());
+          reload();
+          loadCollections(); // refresh the Hidden chip's count
+          undoStack.push(next ? 'hide from library' : 'show in library', async () => {
+            for (const id of targetIds) {
+              await window.moodmark.saves.setHidden(id, !next);
+            }
+            reload();
+            loadCollections();
+          });
+        },
+      });
+    }
+
     // Copy image bytes to the system clipboard so the user can
     // paste into Figma / Slack / Mail / etc. Single-save only — the
     // clipboard holds one image at a time.
@@ -1460,7 +1541,7 @@ export default function App({ entitlement } = {}) {
     if (items.length > 0) items.push({ type: 'separator' });
     if (isMulti) {
       items.push({
-        label: `Export${suffix}`,
+        label: `Download${suffix}`,
         icon: <DownloadIcon />,
         onClick: () => window.moodmark.saves.exportBulk(targetIds),
       });
@@ -1472,7 +1553,7 @@ export default function App({ entitlement } = {}) {
           ? `${exportAnchor.title}.${ext}`
           : `moodmark-${exportAnchor.id.slice(0, 8)}.${ext}`;
         items.push({
-          label: 'Export',
+          label: 'Download',
           icon: <DownloadIcon />,
           onClick: () => window.moodmark.image.export(exportAnchor.file_path, exportName),
         });
@@ -1993,6 +2074,25 @@ export default function App({ entitlement } = {}) {
     setSimilarTo(null);
   }, [setView, setSimilarTo]);
 
+  // "Show all in library" from the Hidden view — un-hide everything,
+  // drop back to All, and offer a precise undo restoring exactly the
+  // saves that were hidden.
+  const handleShowAllHidden = useCallback(async () => {
+    const restored = await window.moodmark.saves.showAllHidden();
+    handleViewChange({ type: 'all' });
+    reload();
+    loadCollections();
+    if (Array.isArray(restored) && restored.length > 0) {
+      undoStack.push('show all in library', async () => {
+        for (const id of restored) {
+          await window.moodmark.saves.setHidden(id, true);
+        }
+        reload();
+        loadCollections();
+      });
+    }
+  }, [handleViewChange, reload, loadCollections, undoStack]);
+
   // Opening a collection card from the Search tab leaves search and
   // lands on that collection in Collections mode.
   const handleOpenCollectionFromSearch = useCallback((id) => {
@@ -2347,10 +2447,13 @@ export default function App({ entitlement } = {}) {
   // outside the Saved view, where the toggle isn't shown.
   const sourceCounts = useMemo(() => {
     if (view.type !== 'bookmarks') return null;
-    const counts = { all: 0, x: 0, instagram: 0 };
+    const counts = { all: 0, x: 0, instagram: 0, cosmos: 0 };
     for (const s of saves) {
       counts.all += 1;
-      counts[(s.source || 'x') === 'instagram' ? 'instagram' : 'x'] += 1;
+      const src = s.source === 'instagram' ? 'instagram'
+        : s.source === 'cosmos' ? 'cosmos'
+          : 'x';
+      counts[src] += 1;
     }
     return counts;
   }, [saves, view.type]);
@@ -2791,12 +2894,12 @@ export default function App({ entitlement } = {}) {
     if (!exportPicker) return [];
     return [
       {
-        label: 'Export as Files',
+        label: 'Download as files',
         icon: <DownloadIcon />,
         onClick: handleBulkExportFiles,
       },
       {
-        label: 'Export as Zip',
+        label: 'Download as zip',
         icon: <DownloadIcon />,
         onClick: handleBulkExportZip,
       },
@@ -3065,15 +3168,13 @@ export default function App({ entitlement } = {}) {
     return () => window.removeEventListener('keydown', onKey, true);
   }, [undoStack, showActionToast]);
 
-  // Trackpad gestures on the masonry surface:
-  //   - Pinch-to-zoom: Chromium fires `wheel` with ctrlKey set on
-  //     trackpad pinch. We accumulate deltaY and bump gridColumns
-  //     by ±1 once we cross a threshold so the column count steps
-  //     in discrete units rather than ramping smoothly with the
-  //     gesture (the masonry can't fluidly inter-column).
-  //   - Two-finger horizontal swipe: navigate between smart views
-  //     and top-level buckets, in their sidebar order. Cooldown
-  //     prevents rapid-fire when the trackpad coasts on inertia.
+  // Trackpad pinch-to-zoom on the masonry surface: Chromium fires `wheel`
+  // with ctrlKey set on a trackpad pinch. Accumulate deltaY and bump
+  // gridColumns by ±1 once we cross a threshold so the column count steps
+  // in discrete units rather than ramping smoothly (the masonry can't
+  // fluidly inter-column). Two-finger horizontal-swipe navigation was
+  // removed — it hijacked every sideways scroll (the collections crate,
+  // any horizontal content) to flip between views, which nobody wanted.
   useEffect(() => {
     if (focused) return undefined;
     if (view.type === 'board') return undefined; // board has its own pan/zoom
@@ -3081,67 +3182,24 @@ export default function App({ entitlement } = {}) {
     if (!layout) return undefined;
 
     const PINCH_THRESHOLD = 30;
-    const SWIPE_DELTA_X = 80;
-    const SWIPE_DELTA_Y_MAX = 20;
-    const SWIPE_COOLDOWN_MS = 700;
     let pinchAccum = 0;
-    let lastSwipe = 0;
-
-    const navTargets = [
-      { type: 'all' },
-      { type: 'unsorted' },
-      { type: 'onThisDay' },
-      { type: 'trash' },
-      ...collections
-        .filter((c) => !c.parent_id)
-        .map((c) => ({ type: 'collection', id: c.id })),
-    ];
-
-    function indexOfCurrent() {
-      return navTargets.findIndex((t) => {
-        if (t.type !== view.type) return false;
-        if (t.type === 'collection') return t.id === view.id;
-        return true;
-      });
-    }
-
-    function navigate(direction) {
-      const i = indexOfCurrent();
-      if (i < 0) return;
-      const next = (i + direction + navTargets.length) % navTargets.length;
-      setView(navTargets[next]);
-    }
 
     function onWheel(e) {
       // Pinch — Chromium synthesises ctrlKey on trackpad pinch.
-      if (e.ctrlKey) {
-        e.preventDefault();
-        pinchAccum += e.deltaY;
-        if (Math.abs(pinchAccum) >= PINCH_THRESHOLD) {
-          // Pinch out (deltaY < 0) = zoom in = fewer columns.
-          // Pinch in (deltaY > 0) = zoom out = more columns.
-          setGridColumns((c) => Math.max(1, Math.min(8, c + (pinchAccum > 0 ? 1 : -1))));
-          pinchAccum = 0;
-        }
-        return;
-      }
-      // Horizontal swipe — only fire when the gesture is clearly
-      // sideways and we're not in the middle of an inertial scroll
-      // following a vertical one. Skip if the event came from an
-      // element that owns its own horizontal scroll (e.g. the
-      // featured-buckets row) so its native scroll isn't hijacked.
-      if (Math.abs(e.deltaX) > SWIPE_DELTA_X && Math.abs(e.deltaY) < SWIPE_DELTA_Y_MAX) {
-        if (e.target?.closest?.('[data-allow-horizontal-scroll]')) return;
-        const now = Date.now();
-        if (now - lastSwipe < SWIPE_COOLDOWN_MS) return;
-        lastSwipe = now;
-        navigate(e.deltaX > 0 ? 1 : -1);
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      pinchAccum += e.deltaY;
+      if (Math.abs(pinchAccum) >= PINCH_THRESHOLD) {
+        // Pinch out (deltaY < 0) = zoom in = fewer columns.
+        // Pinch in (deltaY > 0) = zoom out = more columns.
+        setGridColumns((c) => Math.max(1, Math.min(8, c + (pinchAccum > 0 ? 1 : -1))));
+        pinchAccum = 0;
       }
     }
 
     layout.addEventListener('wheel', onWheel, { passive: false });
     return () => layout.removeEventListener('wheel', onWheel);
-  }, [collections, view, focused, setView]);
+  }, [view, focused]);
 
   const onDragOver = useCallback((e) => {
     e.preventDefault();
@@ -3466,7 +3524,7 @@ export default function App({ entitlement } = {}) {
       { id: 'open-trash', label: 'Open trash', keywords: 'deleted bin', Icon: () => <Trash2 {...ICON} />, run: () => { handleModeChange('library'); handleViewChange({ type: 'trash' }); } },
       { id: 'shortcuts', label: 'Keyboard shortcuts', hint: '⌘/', keywords: 'keys help hotkeys', Icon: () => <Keyboard {...ICON} />, run: () => setShortcutsOpen(true) },
       { id: 'whats-new', label: "What's new", keywords: 'release notes changelog version', Icon: () => <Sparkles {...ICON} />, run: () => handleOpenReleaseNotes() },
-      { id: 'export-library', label: 'Export library as zip', keywords: 'backup download archive', Icon: () => <Archive {...ICON} />, run: () => window.moodmark.library?.exportZip?.() },
+      { id: 'export-library', label: 'Download library as zip', keywords: 'backup download archive export', Icon: () => <Archive {...ICON} />, run: () => window.moodmark.library?.exportZip?.() },
       { id: 'snapshot-library', label: 'Back up library now', keywords: 'snapshot data safety', Icon: () => <Save {...ICON} />, run: () => window.moodmark.backup?.snapshot?.() },
       { id: 'settings', label: 'Open settings', hint: '⌘,', keywords: 'preferences options', Icon: () => <Settings {...ICON} />, run: () => setSettingsOpen(true) },
       settingsPage('appearance', 'Settings · Appearance', 'theme dark light', () => <Palette {...ICON} />),
@@ -3475,10 +3533,9 @@ export default function App({ entitlement } = {}) {
       settingsPage('tags', 'Settings · Tags', 'manage rename merge', () => <Tag {...ICON} />),
       settingsPage('capture', 'Settings · Capture', 'hotkey shortcut screenshot drop folder', () => <Crop {...ICON} />),
       settingsPage('syncing', 'Settings · Syncing', 'x instagram bookmarks extension', () => <RefreshCw {...ICON} />),
-      settingsPage('sound', 'Settings · Sound', 'effects volume', () => <Volume2 {...ICON} />),
       settingsPage('updates', 'Settings · Updates', 'version beta check', () => <RotateCw {...ICON} />),
       settingsPage('storage', 'Settings · Storage', 'space optimize reclaim size', () => <HardDrive {...ICON} />),
-      settingsPage('data', 'Settings · Data', 'backup snapshot restore wipe export', () => <Database {...ICON} />),
+      settingsPage('data', 'Settings · Data', 'backup snapshot restore wipe export download', () => <Database {...ICON} />),
       settingsPage('about', 'Settings · About', 'acknowledgments version privacy', () => <Info {...ICON} />),
     ];
   }, [handleCreateAndOpenCollection, handleCreateBoard, handleModeChange, handleViewChange, handleOpenReleaseNotes, setView]);
@@ -3550,6 +3607,7 @@ export default function App({ entitlement } = {}) {
               videoMuted={prefs.videoMuted !== false}
               onVideoMutedChange={handleVideoMutedChange}
               altImageIdx={focusedAltImageIdx}
+              onFilterAuthor={handleFilterByAuthor}
             />
           ) : (
             <>
@@ -3607,7 +3665,13 @@ export default function App({ entitlement } = {}) {
                   scroll this pill simply stays put — no crossfade, no
                   shift, no flash. */}
               <div className="mode-pill-float">
-                <ModePill mode={appMode} onModeChange={handleModeChange} />
+                {/* The crate is a fixed dark stage — force the pill dark so
+                    it doesn't float as a bright light-mode chip over it. */}
+                <ModePill
+                  mode={appMode}
+                  onModeChange={handleModeChange}
+                  dark={appMode === 'folders' && view.type === 'all'}
+                />
               </div>
               {appMode === 'search' ? (
                 // Dedicated Search tab — search-first canvas. Hero field
@@ -3618,10 +3682,11 @@ export default function App({ entitlement } = {}) {
                   onSearchChange={setSearch}
                   onRecordSearch={recentSearches.recordSearch}
                   onClearRecentSearches={recentSearches.clearAll}
+                  onRestoreRecentSearches={recentSearches.restore}
                   recentSearches={recentSearches.items}
                   suggestedTags={suggestedTags}
                   allTags={allTags}
-                  onOpenCommandPalette={() => setQuickSwitcherOpen(true)}
+                  allAuthors={allAuthors}
                   collections={topLevelCollections}
                   onOpenCollection={handleOpenCollectionFromSearch}
                   searchInputRef={searchInputRef}
@@ -3648,24 +3713,16 @@ export default function App({ entitlement } = {}) {
                   highlightId={highlightId}
                 />
               ) : appMode === 'folders' && view.type === 'all' ? (
-                // Folders mode, no folder picked yet → tile grid of
-                // root-level folders. Clicking a tile sets view to
-                // that collection; back-to-all returns here.
-                <FolderGrid
-                  folders={collections}
-                  parentId={null}
-                  onCreateChildFolder={handleCreateChildCollection}
-                  onPickFolder={(id) => handleViewChange({ type: 'collection', id })}
-                  onCreateFolder={handleCreateAndOpenCollection}
-                  onRenameFolder={handleRenameCollection}
-                  onDeleteFolder={handleDeleteCollection}
-                  onReorderFolders={handleReorderCollections}
-                  onAddSavesToBucket={handleAddSavesToBucket}
-                  onDropFilesToBucket={handleDropFilesToBucket}
-                  onExternalDropToBucket={handleExternalDropToBucket}
-                  onSetAppDragging={setDragging}
-                  onOpenCollectionAsSpace={handleOpenCollectionAsSpace}
-                  scrollRef={setGridScrollNode}
+                // Collections tab, no collection picked yet → the crate:
+                // every top-level collection as a record sleeve. Clicking
+                // a sleeve sets view to that collection; back-to-all
+                // returns here. The floating mode pill (z 45) stays above
+                // the crate's stage (z 40), so tab switching keeps working.
+                <CollectionsCrate
+                  open
+                  collections={topLevelCollections}
+                  onOpenCollection={(id) => handleViewChange({ type: 'collection', id })}
+                  onCreateCollection={handleCreateAndOpenCollection}
                 />
               ) : appMode === 'boards' ? (
                 // Boards mode → tile grid of every board. Clicking
@@ -3703,12 +3760,13 @@ export default function App({ entitlement } = {}) {
                   || (appMode === 'folders' && view.type === 'collection')) && (
                   <SmartChipRail
                     activeViewType={
-                      ['all', 'unsorted', 'bookmarks', 'trash'].includes(view.type)
+                      ['all', 'unsorted', 'bookmarks', 'trash', 'hidden'].includes(view.type)
                         ? view.type
                         : 'all'
                     }
                     counts={smartCounts}
                     onPick={(v) => handleViewChange(v)}
+                    onShowAllHidden={handleShowAllHidden}
                     tweetTypeFilter={tweetTypeFilter}
                     tweetTypeCounts={tweetTypeCounts}
                     onTweetTypeChange={setTweetTypeFilter}
@@ -3749,6 +3807,9 @@ export default function App({ entitlement } = {}) {
                       : null}
                     onRenameViewTitle={view.type === 'collection'
                       ? (name) => handleRenameCollection({ id: view.id, name })
+                      : null}
+                    onTitleMenu={view.type === 'collection'
+                      ? (pos) => setCollectionMenu(pos)
                       : null}
                     autoRenameSignal={renameViewSignal}
                   />
@@ -3831,6 +3892,7 @@ export default function App({ entitlement } = {}) {
             aiIndexing={indexingIds.has(focused.id)}
             altImageIdx={focusedAltImageIdx}
             onAltImageIdxChange={setFocusedAltImageIdx}
+            onFilterAuthor={handleFilterByAuthor}
             onClose={() => setFocusedId(null)}
             onCollectionsChanged={loadCollections}
             onTagsChanged={loadAllTags}
@@ -3962,8 +4024,8 @@ export default function App({ entitlement } = {}) {
             type="button"
             className="selection-btn selection-btn-compact"
             onClick={openExportPicker}
-            data-tooltip="Export"
-            aria-label="Export selected images"
+            data-tooltip="Download"
+            aria-label="Download selected images"
           >
             <span className="selection-btn-icon"><DownloadIcon /></span>
             <span className="selection-btn-chevron" aria-hidden="true">
@@ -4107,6 +4169,39 @@ export default function App({ entitlement } = {}) {
           y={cardCtx.y}
           items={cardCtx.items}
           onClose={() => setCardCtx(null)}
+        />
+      )}
+
+      {collectionMenu && view.type === 'collection' && (
+        <ContextMenu
+          x={collectionMenu.x}
+          y={collectionMenu.y}
+          onClose={() => setCollectionMenu(null)}
+          items={[
+            {
+              label: 'Rename',
+              icon: <SquarePen {...ICON} />,
+              onClick: () => setRenameViewSignal((s) => s + 1),
+            },
+            {
+              label: 'Reset cover to automatic',
+              icon: <RestoreIcon />,
+              onClick: async () => {
+                try {
+                  await window.moodmark.collections.setCover(view.id, null);
+                  loadCollections();
+                } catch (err) {
+                  console.error('[cover] reset failed:', err);
+                }
+              },
+            },
+            {
+              label: 'Delete collection',
+              icon: <TrashIcon />,
+              danger: true,
+              onClick: () => handleDeleteCollection(view.id),
+            },
+          ]}
         />
       )}
 

@@ -105,6 +105,8 @@ export default function FocusedView({
   // pbs.twimg.com so we don't have to download every image on the
   // tweet at save time.
   altImageIdx = 0,
+  // Filter the library to a bookmark's author (the tweet card's byline).
+  onFilterAuthor,
 }) {
   const [zoom, setZoom] = useState(1);
   // Tracks whether the cursor is over the focused-view video so the
@@ -313,9 +315,11 @@ export default function FocusedView({
          (thumb_path) instead of file_path — file_path is the MP4
          and CSS background-image can't render video. */
       style={(() => {
-        const bg = record.kind === 'video' && record.thumb_path
-          ? fileUrl(record.thumb_path)
-          : src;
+        // Always a still frame. Keyed off what's actually on the stage
+        // rather than record.kind, so a carousel switched to a clip still
+        // gets that clip's poster — before, that case fell through to the
+        // MP4 path, which CSS can't paint at all.
+        const bg = showVideo ? videoPoster : src;
         return bg ? { '--stage-bg': `url(${JSON.stringify(bg)})` } : undefined;
       })()}
     >
@@ -393,9 +397,9 @@ export default function FocusedView({
           <button
             type="button"
             className={styles.iconBtn}
-            data-tooltip="Export"
+            data-tooltip="Download"
             data-tooltip-pos="below"
-            aria-label="Export"
+            aria-label="Download"
             onClick={handleExport}
           >
             <ExportIcon />
@@ -529,6 +533,7 @@ export default function FocusedView({
                 onOpenX={record.source_url
                   ? () => window.moodmark?.shell?.openUrl?.(record.source_url)
                   : undefined}
+                onOpenAuthor={onFilterAuthor}
               />
             </div>
           </div>

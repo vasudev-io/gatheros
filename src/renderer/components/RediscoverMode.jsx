@@ -109,6 +109,19 @@ export default function RediscoverMode({
       .map((x) => x.c);
   }, [collections, pickerFilter]);
 
+  // Offer to make a new collection whenever the typed name doesn't already
+  // exist. The reported gap was that this picker could only ever file into
+  // collections that already existed — with none, or none matching, the
+  // user was told to go make one in the sidebar.
+  const trimmedFilter = pickerFilter.trim();
+  const exactMatch = collections.some(
+    (c) => c.name.trim().toLowerCase() === trimmedFilter.toLowerCase(),
+  );
+  const showCreateRow = trimmedFilter.length > 0 && !exactMatch;
+  // create is not idempotent — guard against a double trigger (e.g. Enter
+  // plus a trailing mouse event) spawning two collections.
+  const creatingRef = useRef(false);
+
   useEffect(() => {
     if (!open || !currentId) return undefined;
     let cancelled = false;
@@ -142,7 +155,9 @@ export default function RediscoverMode({
     advance('right');
   }
   function openBucketPicker() {
-    if (!currentId || collections.length === 0) return;
+    // Open even with zero collections — the picker is now where the user
+    // creates their first one, so an empty library can't be a dead-end.
+    if (!currentId) return;
     setPickerFilter('');
     setPickerActiveIdx(0);
     setPickerOpen(true);
@@ -153,6 +168,26 @@ export default function RediscoverMode({
     setSession((s) => [...s, { id: currentId, outcome: 'filed', collectionId }]);
     setPickerOpen(false);
     advance('up');
+  }
+
+  // Create a collection from the typed name and file the current card into
+  // it (reusing an exact-name match instead of duplicating). onAddToBucket
+  // reloads the parent's collection list, so the new one shows up after.
+  async function createAndFileInto(rawName) {
+    const name = (rawName || '').trim();
+    if (!name || !currentId || creatingRef.current) return;
+    creatingRef.current = true;
+    try {
+      const existing = collections.find(
+        (c) => c.name.trim().toLowerCase() === name.toLowerCase(),
+      );
+      const target = existing || await window.moodmark?.collections?.create?.({ name });
+      if (target?.id) fileInto(target.id);
+    } catch (err) {
+      console.error('[rediscover] create collection failed:', err);
+    } finally {
+      creatingRef.current = false;
+    }
   }
 
   // ── Pointer drag on the top card ─────────────────────────────────
@@ -220,8 +255,10 @@ export default function RediscoverMode({
           return;
         }
         if (e.key === 'Enter') {
+          e.preventDefault();
           const c = filteredCollections[pickerActiveIdx];
-          if (c) { e.preventDefault(); fileInto(c.id); }
+          if (c) fileInto(c.id);
+          else if (showCreateRow) createAndFileInto(trimmedFilter);
           return;
         }
         return;
@@ -233,7 +270,7 @@ export default function RediscoverMode({
     }
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [open, current, currentId, pickerOpen, filteredCollections, pickerActiveIdx]);
+  }, [open, current, currentId, pickerOpen, filteredCollections, pickerActiveIdx, showCreateRow, trimmedFilter]);
 
   if (!open) return null;
 
@@ -371,8 +408,10 @@ export default function RediscoverMode({
       </div>
 
       {/* Collection zone (top) — same icon / label / keycap layout as the
-          Trash + Keep zones. Drag the card up here, click it, or press ↑. */}
-      {collections.length > 0 && (
+          Trash + Keep zones. Drag the card up here, click it, or press ↑.
+          Always shown: with no collections yet, this is how the user makes
+          their first one. */}
+      {(
         <button
           type="button"
           className={`${styles.zone} ${styles.zoneTop} ${hotZone === 'collection' ? styles.zoneHot : ''}`}
@@ -496,17 +535,29 @@ export default function RediscoverMode({
           <input
             autoFocus
             className={styles.pickerInput}
-            placeholder="Add to collection…"
+            placeholder="Add to or create a collection…"
             value={pickerFilter}
             onChange={(e) => { setPickerFilter(e.target.value); setPickerActiveIdx(0); }}
           />
           <div className={styles.pickerList}>
+            {showCreateRow && (
+              <button
+                type="button"
+                className={styles.pickerItem}
+                onMouseDown={(e) => { e.preventDefault(); createAndFileInto(trimmedFilter); }}
+              >
+                <span className={styles.pickerDot} style={{ background: 'var(--icon-blue)' }} />
+                <span className={styles.pickerName}>Create “{trimmedFilter}”</span>
+              </button>
+            )}
             {filteredCollections.length === 0 ? (
-              <div className={styles.pickerEmpty}>
-                {collections.length === 0
-                  ? 'No collections yet — create one from the sidebar.'
-                  : `No collection matches "${pickerFilter}".`}
-              </div>
+              !showCreateRow && (
+                <div className={styles.pickerEmpty}>
+                  {collections.length === 0
+                    ? 'Type a name to create your first collection.'
+                    : `No collection matches "${pickerFilter}".`}
+                </div>
+              )
             ) : (
               filteredCollections.map((c, i) => {
                 const isIn = currentCollectionIds.has(c.id);

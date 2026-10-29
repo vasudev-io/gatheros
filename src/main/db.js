@@ -426,6 +426,17 @@ const MIGRATIONS = [
   (database) => {
     addColumnIfMissing(database, 'saves', 'viewed_at', 'INTEGER');
   },
+  // "Hide from library" flag — a save with hidden_at set is dropped
+  // from the plain All grid but stays in collections, search, etc.
+  (database) => {
+    addColumnIfMissing(database, 'saves', 'hidden_at', 'INTEGER');
+  },
+  // User-chosen collection cover. NULL = fall back to the newest save
+  // (the original auto-cover behaviour). Set via "Set as collection
+  // cover" on a save; the crate's sleeve face prefers it.
+  (database) => {
+    addColumnIfMissing(database, 'collections', 'cover_save_id', 'TEXT');
+  },
 ];
 
 function addColumnIfMissing(database, table, name, type) {
@@ -822,7 +833,7 @@ const SAVE_LIST_COLUMNS = [
   'id', 'file_path', 'thumb_path', 'title', 'source_url', 'width',
   'height', 'file_size', 'palette', 'palette_lab', 'created_at',
   'ai_prompt', 'deleted_at', 'meta', 'notes', 'content_hash', 'kind',
-  'tweet_meta', 'source', 'preview_path', 'view_count',
+  'tweet_meta', 'source', 'preview_path', 'view_count', 'hidden_at',
 ].join(', ');
 
 // Sanitize free text into an FTS5 phrase-prefix query: each whitespace
@@ -867,7 +878,7 @@ function getAllSaves({ search = '', sort = 'newest', collectionId = null, colorH
       conditions.push(`id IN (
         SELECT save_id FROM save_tags
         JOIN tags ON save_tags.tag_id = tags.id
-        WHERE tags.name IN ('bookmark', 'instagram', 'x:bookmark', 'instagram:save')
+        WHERE tags.name IN ('bookmark', 'instagram', 'x:bookmark', 'instagram:save', 'cosmos')
       )`);
     } else if (view === 'onThisDay') {
       // Same calendar month + day as today, in any prior year. Local
@@ -908,6 +919,16 @@ function getAllSaves({ search = '', sort = 'newest', collectionId = null, colorH
     params.push(name);
   }
 
+  // from:<handle> — bookmarks by the account that wrote them, read out of
+  // tweet_meta. The stored handle keeps its leading '@', so both sides are
+  // stripped and lowercased before comparing. Multiple from: filters would
+  // AND to nothing (a tweet has one author), so they OR instead.
+  if (parsed.authors.length) {
+    const slots = parsed.authors.map(() => '?').join(', ');
+    conditions.push(`LOWER(REPLACE(COALESCE(json_extract(tweet_meta, '$.authorHandle'), ''), '@', '')) IN (${slots})`);
+    params.push(...parsed.authors);
+  }
+
   // bucket:<name> — resolve via collections.name (case-insensitive).
   // Multiple bucket filters intersect, same as tags.
   for (const name of parsed.bucketNames) {
@@ -935,6 +956,28 @@ function getAllSaves({ search = '', sort = 'newest', collectionId = null, colorH
   if (parsed.after != null) {
     conditions.push('created_at > ?');
     params.push(parsed.after);
+  }
+
+  // Hidden saves. `is:hidden` surfaces ONLY hidden saves (the review
+  // view). Otherwise hidden saves are dropped from the plain,
+  // unfiltered "All" library grid — but stay fully visible in
+  // collections, Unsorted, Saved, search, and every other view. So a
+  // save can be hidden from the main feed while still living
+  // everywhere else. Any active filter (text, tag, bucket, color,
+  // date, untagged) or a specific view re-includes them, since the
+  // user is then looking for something specific.
+  if (parsed.hidden) {
+    conditions.push('hidden_at IS NOT NULL');
+  } else {
+    const activeFilter = !!(
+      text || collectionId || effectiveColorHex
+      || parsed.tagNames.length || parsed.bucketNames.length
+      || parsed.untagged || parsed.before != null || parsed.after != null
+      || parsed.authors.length
+    );
+    if (view === 'all' && !activeFilter) {
+      conditions.push('hidden_at IS NULL');
+    }
   }
 
   if (text) {
@@ -1033,6 +1076,17 @@ function getRecentlyViewed(limit = 12) {
        WHERE deleted_at IS NULL AND viewed_at IS NOT NULL
        ORDER BY viewed_at DESC LIMIT ?`)
     .all(n);
+}
+
+// Toggle the "hide from the main library grid" flag. hidden = true
+// stamps hidden_at; false clears it. Doesn't touch FTS (hidden_at
+// isn't an indexed column) so search still finds the save.
+function setSaveHidden(id, hidden) {
+  if (!id) return { ok: false };
+  getDatabase()
+    .prepare('UPDATE saves SET hidden_at = ? WHERE id = ?')
+    .run(hidden ? Date.now() : null, id);
+  return { ok: true };
 }
 
 function getSave(id) {
@@ -1278,13 +1332,16 @@ function getSmartViewCounts() {
       AND id NOT IN (SELECT save_id FROM collection_items)
   `).get();
   const trash = db.prepare('SELECT COUNT(*) AS n FROM saves WHERE deleted_at IS NOT NULL').get();
+  const hidden = db.prepare(
+    'SELECT COUNT(*) AS n FROM saves WHERE deleted_at IS NULL AND hidden_at IS NOT NULL',
+  ).get();
   const bookmarks = db.prepare(`
     SELECT COUNT(*) AS n FROM saves
     WHERE deleted_at IS NULL
       AND id IN (
         SELECT save_id FROM save_tags
         JOIN tags ON save_tags.tag_id = tags.id
-        WHERE tags.name IN ('bookmark', 'instagram', 'x:bookmark', 'instagram:save')
+        WHERE tags.name IN ('bookmark', 'instagram', 'x:bookmark', 'instagram:save', 'cosmos')
       )
   `).get();
   // Saves whose calendar date matches today in some prior year — same
@@ -1303,7 +1360,20 @@ function getSmartViewCounts() {
     trash: trash?.n ?? 0,
     bookmarks: bookmarks?.n ?? 0,
     onThisDay: onThisDay?.n ?? 0,
+    hidden: hidden?.n ?? 0,
   };
+}
+
+// Clear the hidden flag on every hidden save — powers the "Show all in
+// library" bulk action. Returns the ids that were un-hidden so the
+// caller can offer a precise undo.
+function showAllHidden() {
+  const db = getDatabase();
+  const rows = db
+    .prepare('SELECT id FROM saves WHERE deleted_at IS NULL AND hidden_at IS NOT NULL')
+    .all();
+  db.prepare('UPDATE saves SET hidden_at = NULL WHERE deleted_at IS NULL AND hidden_at IS NOT NULL').run();
+  return rows.map((r) => r.id);
 }
 
 function getSaveEmbeddings() {
@@ -1427,6 +1497,10 @@ function getAllCollectionsWithThumbs() {
                WHEN LOWER(s.file_path) LIKE '%.gif' THEN s.file_path
                ELSE COALESCE(NULLIF(s.thumb_path, ''), s.file_path)
              END AS thumb_or_file,
+             -- Full-quality cover for large renders (the collections
+             -- crate paints a ~320px-wide sleeve; thumb_path is too
+             -- small and reads blurry there).
+             COALESCE(NULLIF(s.preview_path, ''), NULLIF(s.file_path, ''), s.thumb_path) AS cover_or_file,
              ROW_NUMBER() OVER (
                PARTITION BY m.cid
                ORDER BY m.added_at DESC, s.created_at DESC
@@ -1448,7 +1522,16 @@ function getAllCollectionsWithThumbs() {
     )
     SELECT c.id, c.name, c.color, c.created_at, c.order_index, c.parent_id,
            (SELECT COUNT(*) FROM membership m WHERE m.cid = c.id) AS save_count,
-           tt.thumbs AS thumbs_blob
+           tt.thumbs AS thumbs_blob,
+           -- Cover: the user's chosen save (full quality) when set and still
+           -- alive, otherwise the newest save in the collection.
+           COALESCE(
+             (SELECT COALESCE(NULLIF(cs.preview_path, ''), NULLIF(cs.file_path, ''), cs.thumb_path)
+                FROM saves cs
+               WHERE cs.id = c.cover_save_id AND cs.deleted_at IS NULL),
+             (SELECT r.cover_or_file FROM ranked r
+               WHERE r.collection_id = c.id AND r.rn = 1)
+           ) AS cover
     FROM collections c
     LEFT JOIN top_thumbs tt ON tt.collection_id = c.id
     ORDER BY c.order_index ASC, c.created_at ASC
@@ -1531,6 +1614,24 @@ function getAllTags() {
     WHERE ${NOT_INTERNAL_TAG}
     GROUP BY t.id
     ORDER BY t.name ASC
+  `).all();
+}
+
+// Every account whose posts you've saved, most-saved first. Drives the
+// from: filter's autocomplete. Handles are returned without the stored
+// leading '@' so they compose straight into a `from:` token.
+function getAllAuthors() {
+  return getDatabase().prepare(`
+    SELECT
+      LOWER(REPLACE(json_extract(tweet_meta, '$.authorHandle'), '@', '')) AS handle,
+      json_extract(tweet_meta, '$.authorName') AS name,
+      COUNT(*) AS save_count
+    FROM saves
+    WHERE deleted_at IS NULL
+      AND tweet_meta IS NOT NULL
+      AND COALESCE(json_extract(tweet_meta, '$.authorHandle'), '') <> ''
+    GROUP BY handle
+    ORDER BY save_count DESC, name ASC
   `).all();
 }
 
@@ -1640,6 +1741,23 @@ function reorderCollections(orderedIds) {
 
 function renameCollection({ id, name } = {}) {
   getDatabase().prepare('UPDATE collections SET name = ? WHERE id = ?').run(name, id);
+  return { ok: true };
+}
+
+// Pin a specific save as the collection's cover. Pass saveId = null to
+// clear it (revert to the newest-save auto-cover). Only accepts a save
+// that actually belongs to the collection, so a stray id can't set a
+// cover the collection doesn't contain.
+function setCollectionCover({ id, saveId } = {}) {
+  if (!id) return { ok: false, reason: 'invalid' };
+  const db = getDatabase();
+  if (saveId) {
+    const member = db.prepare(
+      'SELECT 1 FROM collection_items WHERE collection_id = ? AND save_id = ? LIMIT 1'
+    ).get(id, saveId);
+    if (!member) return { ok: false, reason: 'not-in-collection' };
+  }
+  db.prepare('UPDATE collections SET cover_save_id = ? WHERE id = ?').run(saveId || null, id);
   return { ok: true };
 }
 
@@ -1958,6 +2076,8 @@ module.exports = {
   initDatabase,
   markSaveViewed,
   getRecentlyViewed,
+  setSaveHidden,
+  showAllHidden,
   getSaveEmbeddingsCached,
   invalidateEmbeddingCache,
   getDatabase,
@@ -1998,6 +2118,7 @@ module.exports = {
   getCollectionsContainingAll,
   createCollection,
   renameCollection,
+  setCollectionCover,
   setCollectionParent,
   deleteCollection,
   reorderCollections,
@@ -2005,6 +2126,7 @@ module.exports = {
   addSaveToCollection,
   removeSaveFromCollection,
   getAllTags,
+  getAllAuthors,
   getTagsForSave,
   addTagToSave,
   removeTagFromSave,

@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   ChevronLeft, Grid2x2, Square, Images, Inbox, Trash2,
-  Clock, History, Eye,
+  Clock, History, Eye, EyeOff, MoreHorizontal,
   Type, Image as ImageIcon, Film, Bookmark,
 } from 'lucide-react';
 import styles from './SmartChipRail.module.css';
@@ -49,8 +49,8 @@ const TYPE_FILTERS = [
 ];
 
 // Saved-view source filter — a segmented control (All · X · Instagram)
-// shown only on the Saved view. 'all' is the no-op default; X and
-// Instagram are icon-only segments.
+// shown only on the Saved view. 'all' is the no-op default; the
+// rest are icon-only segments.
 const SOURCE_FILTERS = [
   { value: 'all',       label: 'All', Icon: null },
   { value: 'x',         label: 'X',   Icon: XGlyph },
@@ -95,6 +95,9 @@ export default function SmartChipRail({
   onSortChange,
   columns,
   onColumnsChange,
+  // "Show all in library" — restores every hidden save at once. Only
+  // rendered while the Hidden review view is active.
+  onShowAllHidden = null,
   // When the user drills into a folder, the rail's left cluster
   // swaps the All/Unsorted/Trash chips for a back button + folder
   // title. Sort + zoom on the right stay regardless.
@@ -105,6 +108,9 @@ export default function SmartChipRail({
   // top-level collections.
   parentCrumb = null,
   // Optional inline-rename callback. When provided, clicking the
+  // Opens the collection options menu (⋯ beside the title). Given the
+  // click's screen position; null hides the button (non-collection views).
+  onTitleMenu = null,
   // viewTitle swaps it for an editable input. Only wired in for
   // collection views — there's no rename for All/Unsorted/Trash.
   onRenameViewTitle = null,
@@ -221,9 +227,29 @@ export default function SmartChipRail({
                 }
               }}
             />
+            {onTitleMenu && (
+              <button
+                type="button"
+                className={styles.titleMenuBtn}
+                title="Collection options"
+                aria-label="Collection options"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  onTitleMenu({ x: Math.round(r.left), y: Math.round(r.bottom + 4) });
+                }}
+              >
+                <MoreHorizontal size={18} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+            )}
           </>
         ) : (
-          CHIPS.map(({ id, label, Icon }) => {
+          // "Hidden" is just another smart-view tab — same look and
+          // behaviour (icon reveals only when active) — that only joins
+          // the row once something is actually hidden.
+          (counts.hidden > 0
+            ? [...CHIPS, { id: 'hidden', label: 'Hidden', Icon: EyeOff }]
+            : CHIPS
+          ).map(({ id, label, Icon }) => {
             const isActive = activeViewType === id;
             return (
               <button
@@ -244,6 +270,12 @@ export default function SmartChipRail({
         )}
       </div>
       <div className={styles.right}>
+        {activeViewType === 'hidden' && onShowAllHidden && (
+          <button type="button" className={styles.showAllBtn} onClick={onShowAllHidden}>
+            <Eye size={14} strokeWidth={1.8} aria-hidden="true" />
+            Show all in library
+          </button>
+        )}
         {onColumnsChange && (
           <div className={styles.zoom} title="Card size">
             <Grid2x2 className={styles.zoomGlyph} size={13} strokeWidth={1.8} aria-hidden="true" />
@@ -292,7 +324,7 @@ export default function SmartChipRail({
               <button
                 key={value}
                 type="button"
-                className={`${styles.sourceSeg}${sourceFilter === value ? ` ${styles.sourceSegOn}` : ''}`}
+                className={`${styles.sourceSeg}${Icon ? ` ${styles.sourceSegIcon}` : ''}${sourceFilter === value ? ` ${styles.sourceSegOn}` : ''}`}
                 onClick={() => onSourceChange(value)}
                 aria-pressed={sourceFilter === value}
                 title={value === 'all' ? 'All saves' : `${label} only`}
