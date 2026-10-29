@@ -933,6 +933,16 @@ export default function App({ entitlement } = {}) {
   }, []);
   useEffect(() => { loadBoards(); }, [loadBoards]);
 
+  // An inbox pull filed saves or created collections: refresh the
+  // sidebar, boards, and the grid so moved items leave Inbox.
+  useEffect(() =>
+    window.moodmark.on('inbox:library-changed', () => {
+      loadCollections();
+      loadBoards();
+      reload();
+    }),
+  [loadCollections, loadBoards, reload]);
+
   // Walkthrough lifecycle. Install the starter pack on every
   // start (idempotent — ingestZip dedups by content_hash). On
   // end, reload saves + collections + boards because "Start

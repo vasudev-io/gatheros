@@ -294,6 +294,15 @@ contextBridge.exposeInMainWorld('moodmark', {
     install: () => ipcRenderer.invoke('updater:install'),
     check: () => ipcRenderer.invoke('updater:check'),
   },
+  inbox: {
+    status: () => ipcRenderer.invoke('inbox:status'),
+    pull: () => ipcRenderer.invoke('inbox:pull'),
+    listTokens: () => ipcRenderer.invoke('inbox:tokens:list'),
+    createToken: (label) => ipcRenderer.invoke('inbox:tokens:create', { label }),
+    revokeToken: (id) => ipcRenderer.invoke('inbox:tokens:revoke', id),
+    // rating: 'like' | 'dislike' | null (null clears it).
+    rate: (saveId, rating) => ipcRenderer.invoke('inbox:rate', { saveId, rating: rating || null }),
+  },
   licensing: {
     requestMagicLink: (email) => ipcRenderer.invoke('licensing:request-magic-link', email),
     verify: (opts) => ipcRenderer.invoke('licensing:verify', opts),
@@ -327,6 +336,7 @@ contextBridge.exposeInMainWorld('moodmark', {
       'library:switched',
       'licensing:auth-result',
       'menu:command',
+      'inbox:library-changed',
     ]);
     if (!allowed.has(channel)) return () => {};
     const wrapped = (_event, ...args) => listener(...args);

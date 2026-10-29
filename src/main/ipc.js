@@ -977,6 +977,12 @@ function registerIpcHandlers() {
 
   ipcMain.handle('settings:set-pref', (_e, payload = {}) => {
     if (!payload.name) return { ok: false, reason: 'no-name' };
+    if (payload.name === 'apiBaseUrl') {
+      const { normalizeApiBaseUrl } = require('../shared/api-base');
+      const normalized = normalizeApiBaseUrl(payload.value);
+      if (normalized == null) return { ok: false, reason: 'invalid-url' };
+      payload.value = normalized;
+    }
     const result = settings.setPref(payload.name, payload.value);
     // Side-effects: a couple of prefs need to push their new value to
     // wherever it's consumed in the main process (the renderer's
@@ -989,6 +995,10 @@ function registerIpcHandlers() {
       } else if (payload.name === 'updatesAuto' || payload.name === 'updatesChannel') {
         const updater = require('./updater');
         updater.applyPrefs?.();
+      } else if (payload.name === 'inboxEnabled' && payload.value) {
+        require('./inbox').pullInbox({ reason: 'enabled' }).catch(() => {});
+      } else if (payload.name === 'apiBaseUrl' && settings.getPref('inboxEnabled', false)) {
+        require('./inbox').pullInbox({ reason: 'api-base' }).catch(() => {});
       }
     } catch (err) {
       console.warn('[settings] pref side-effect failed:', err.message);

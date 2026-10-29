@@ -12,9 +12,13 @@ const env = (typeof process !== 'undefined' && process.env) || {};
 // production endpoints are session-token gated anyway. Set
 // GATHEROS_API_BASE_URL=http://localhost:8787 when running dev
 // against a local Worker.
-const API_BASE_URL =
-  env.GATHEROS_API_BASE_URL ||
-  'https://api.gatheros.co';
+const { resolveApiBaseUrl } = require('./api-base');
+
+// Env-only default. Callers that should also honor Settings → API
+// server use readConfiguredApiBaseUrl() so a change applies without
+// a restart. This constant stays for anything that only needs the
+// build-time value.
+const API_BASE_URL = resolveApiBaseUrl({ pref: '', env });
 
 // Custom URL scheme registered by the desktop app — magic-link
 // emails redirect into `gatheros://auth/verify?token=…` and the
@@ -32,9 +36,17 @@ const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 // hammering the API.
 const REVERIFY_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+// How often the desktop pulls the inbox while the feature is on.
+// GATHEROS_INBOX_POLL_MS overrides it (minimum 5s) for local testing.
+const parsedPoll = Number(env.GATHEROS_INBOX_POLL_MS);
+const INBOX_POLL_MS = Number.isFinite(parsedPoll) && parsedPoll >= 5000
+  ? parsedPoll
+  : 15 * 60 * 1000;
+
 module.exports = {
   API_BASE_URL,
   URL_SCHEME,
   OFFLINE_GRACE_MS,
   REVERIFY_INTERVAL_MS,
+  INBOX_POLL_MS,
 };

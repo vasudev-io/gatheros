@@ -326,6 +326,31 @@
   left: 8px;
 }
 
+/* Bottom-left corner for inbox saves: the badge plus the like /
+   dislike control (InboxRating.module.css). The wrapper ignores the
+   pointer so the card stays clickable around the controls. */
+.inboxCorner {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.inboxBadge {
+  pointer-events: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(20, 20, 22, 0.55);
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 /* Top-right "this is a video" badge, shown at rest (the clip plays on
    hover). Same dark glass as the other corner icons. */
 .videoBadge {

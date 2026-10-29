@@ -15,6 +15,7 @@
 import { Hono } from 'hono';
 import type { Env, UserRow } from './types';
 import { magicLinkEmail, sendEmail } from './email';
+import { sha256Hex } from './crypto';
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
@@ -234,4 +235,109 @@ export async function userFromSession(
     .run()
     .catch(() => {});
   return row;
+}
+
+export const INBOX_TOKEN_PREFIX = 'gos_in_';
+
+export interface ApiTokenAuth {
+  user: UserRow;
+  tokenId: string;
+  label: string;
+  scopes: string[];
+}
+
+type TokenRow = {
+  token_id: string;
+  label: string;
+  scopes: string;
+  revoked_at: number | null;
+  expires_at: number | null;
+  id: string;
+  email: string;
+  created_at: number;
+  trial_ends_at: number;
+  lemonsqueezy_customer_id: string | null;
+  deleted_at: number | null;
+};
+
+// Inbox tokens are write credentials for /mcp and the inbox create
+// routes. They are looked up by sha256, so the raw value is not in D1.
+export async function userFromApiToken(
+  env: Env,
+  rawToken: string,
+  requiredScope: string,
+): Promise<{ ok: true; auth: ApiTokenAuth } | { ok: false; error: 'invalid' | 'revoked' | 'expired' | 'missing_scope' }> {
+  const tokenHash = await sha256Hex(rawToken);
+  const row = await env.DB.prepare(
+    `SELECT t.id AS token_id, t.label, t.scopes, t.revoked_at, t.expires_at,
+            u.id, u.email, u.created_at, u.trial_ends_at, u.lemonsqueezy_customer_id, u.deleted_at
+       FROM api_tokens t
+       JOIN users u ON u.id = t.user_id
+      WHERE t.token_hash = ?`,
+  )
+    .bind(tokenHash)
+    .first<TokenRow>();
+  if (!row || row.deleted_at) return { ok: false, error: 'invalid' };
+  if (row.revoked_at) return { ok: false, error: 'revoked' };
+  if (row.expires_at && row.expires_at <= Date.now()) return { ok: false, error: 'expired' };
+  let scopes: string[] = [];
+  try {
+    const parsed = JSON.parse(row.scopes);
+    if (Array.isArray(parsed)) scopes = parsed.filter((s) => typeof s === 'string');
+  } catch {
+    scopes = [];
+  }
+  if (!scopes.includes(requiredScope)) return { ok: false, error: 'missing_scope' };
+  env.DB.prepare(`UPDATE api_tokens SET last_used_at = ? WHERE id = ?`)
+    .bind(Date.now(), row.token_id)
+    .run()
+    .catch(() => {});
+  return {
+    ok: true,
+    auth: {
+      user: {
+        id: row.id,
+        email: row.email,
+        created_at: row.created_at,
+        trial_ends_at: row.trial_ends_at,
+        lemonsqueezy_customer_id: row.lemonsqueezy_customer_id,
+        deleted_at: row.deleted_at,
+      },
+      tokenId: row.token_id,
+      label: row.label,
+      scopes,
+    },
+  };
+}
+
+// Session routes. An inbox token is a 403, not a 401, so a leaked bot
+// credential can't be confused with "try again" and is obviously the
+// wrong kind of credential for reading the account.
+export async function requireSession(c: { env: Env; req: { header: (name: string) => string | undefined } }): Promise<UserRow | Response> {
+  const token = bearer(c.req.header('Authorization'));
+  if (!token) return Response.json({ ok: false, error: 'unauthenticated' }, { status: 401 });
+  if (token.startsWith(INBOX_TOKEN_PREFIX)) {
+    return Response.json({ ok: false, error: 'inbox_token_not_allowed' }, { status: 403 });
+  }
+  const user = await userFromSession(c.env, token);
+  if (!user || user.deleted_at) return Response.json({ ok: false, error: 'unauthenticated' }, { status: 401 });
+  return user;
+}
+
+export async function requireInboxWrite(c: { env: Env; req: { header: (name: string) => string | undefined } }): Promise<ApiTokenAuth | Response> {
+  const token = bearer(c.req.header('Authorization'));
+  if (!token) return Response.json({ ok: false, error: 'unauthenticated' }, { status: 401 });
+  if (!token.startsWith(INBOX_TOKEN_PREFIX)) {
+    const user = await userFromSession(c.env, token);
+    if (user && !user.deleted_at) {
+      return Response.json({ ok: false, error: 'session_token_not_allowed' }, { status: 403 });
+    }
+    return Response.json({ ok: false, error: 'unauthenticated' }, { status: 401 });
+  }
+  const result = await userFromApiToken(c.env, token, 'inbox:write');
+  if (!result.ok) {
+    const status = result.error === 'missing_scope' ? 403 : 401;
+    return Response.json({ ok: false, error: result.error === 'invalid' ? 'unauthenticated' : result.error }, { status });
+  }
+  return result.auth;
 }

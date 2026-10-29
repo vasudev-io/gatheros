@@ -6,38 +6,34 @@ import styles from './PrivacyModal.module.css';
 // enough to scan in one sitting; for the full long-form text the
 // "View full policy" link opens the GitHub copy.
 
-const POLICY_URL = 'https://github.com/BrettfromDJ/GatherOS/blob/main/PRIVACY.md';
+const POLICY_URL = 'https://github.com/vasudev-io/gatheros/blob/main/PRIVACY.md';
 const SUPPORT_EMAIL = 'hey@gatheros.co';
 
 const SECTIONS = [
   {
-    title: 'Local-first',
+    title: 'Your library stays on this Mac',
     body:
-      'Every save, collection, tag, and note lives in ' +
-      '~/Library/Application Support/GatherOS/ on your machine. ' +
-      'GatherOS doesn’t run servers — nothing in that folder is uploaded by us.',
+      'Saves, collections, tags, and notes live in ' +
+      '~/Library/Application Support/GatherOS/. The app does not upload that folder. ' +
+      'You can turn on an optional inbox, described below, which is the exception.',
+  },
+  {
+    title: 'Account, licensing, and AI',
+    body:
+      'Sign-in, subscription status, and AI features use a GatherOS server. ' +
+      'Magic-link email goes out through our email provider. AI indexing sends ' +
+      'the image to OpenAI through that server when AI is on. There is no separate API key to paste.',
+  },
+  {
+    title: 'Inbox',
+    body:
+      'Off by default. If you create a token, an assistant can send images, titles, notes, tags, and source links into your account. ' +
+      'Your Mac pulls them into the library. Copies on the server are deleted after delivery, and unpulled items expire after 30 days. Revoke the token anytime in Settings.',
   },
   {
     title: 'No tracking',
     body:
-      'We don’t collect analytics, telemetry, or crash reports. ' +
-      'We don’t require an account. We don’t show ads or share ' +
-      'data with third parties.',
-  },
-  {
-    title: 'Your OpenAI key',
-    body:
-      'When you supply an OpenAI key, it’s stored in the macOS ' +
-      'Keychain (encrypted by the OS). It’s used only to authenticate ' +
-      'requests sent directly from your machine to api.openai.com. ' +
-      'We never see it.',
-  },
-  {
-    title: 'AI features and OpenAI',
-    body:
-      'When AI features are on, GatherOS sends image data and short ' +
-      'text snippets to OpenAI on your behalf. OpenAI handles that data ' +
-      'under their own terms. Toggle the features off and no calls are made.',
+      'We don’t collect analytics, telemetry, or crash reports, and we don’t show ads.',
   },
   {
     title: 'Auto-updates',

@@ -153,6 +153,9 @@ licenseRoutes.post('/checkout', async (c) => {
         ? c.env.LEMONSQUEEZY_VARIANT_MONTHLY
         : null;
   if (!variantId) return c.json({ ok: false, error: 'invalid_plan' }, 400);
+  if (!c.env.LEMONSQUEEZY_STORE_ID) {
+    return c.json({ ok: false, error: 'billing_not_configured' }, 503);
+  }
 
   try {
     const res = await fetch('https://api.lemonsqueezy.com/v1/checkouts', {

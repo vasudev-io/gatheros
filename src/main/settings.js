@@ -50,6 +50,17 @@ const DEFAULT_PREFS = {
   syncXEnabled: true,
   syncInstagramEnabled: true,
 
+  // Inbox pull. Off until the user turns it on. apiBaseUrl empty
+  // means "use GATHEROS_API_BASE_URL or the production default".
+  // inboxTarget is { id, kind: 'collection'|'board' } or null, which
+  // means a collection named Inbox.
+  inboxEnabled: false,
+  apiBaseUrl: '',
+  inboxTarget: null,
+  inboxLastSyncAt: null,
+  inboxLastSyncError: null,
+  inboxPendingCount: 0,
+
   // ── Trial / free tier ────────────────────────────────────────
   // Timestamp (ms) of when the local no-account trial started, set on
   // first launch. Drives the 14-day reverse trial: full app while the

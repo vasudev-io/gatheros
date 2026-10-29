@@ -2,7 +2,7 @@
 // any network/parse error returns null so the app never breaks over a
 // notice. The renderer polls this through the announcement:get IPC.
 
-const { API_BASE_URL } = require('../shared/licensing-config');
+const { readConfiguredApiBaseUrl } = require('../shared/api-base');
 
 async function fetchAnnouncement() {
   try {
@@ -10,7 +10,7 @@ async function fetchAnnouncement() {
     const timer = setTimeout(() => controller.abort(), 6000);
     let res;
     try {
-      res = await fetch(`${API_BASE_URL}/announcement`, {
+      res = await fetch(`${readConfiguredApiBaseUrl()}/announcement`, {
         method: 'GET',
         signal: controller.signal,
       });
